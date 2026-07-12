@@ -1,6 +1,6 @@
 package models
 
-type announce []byte
+type trackers []byte
 type metaInfo struct {
 	creationDate uint64
 	comment      string
@@ -27,7 +27,7 @@ type infoDict struct {
 	sizeInfo    sizeInfo
 }
 type bencodedData struct {
-	announceList []announce
-	metaInfo     metaInfo
-	infoDict     infoDict
+	trackers []trackers
+	metaInfo metaInfo
+	infoDict infoDict
 }
