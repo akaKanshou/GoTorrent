@@ -16,9 +16,12 @@ type fileSpecs struct {
 	md5sum [32]byte
 	path   []string
 }
+
+type hashBytes = [20]byte
+
 type infoDict struct {
 	pieceLength uint64
-	pieces      [][]string //SHA1 hashes of every piece
+	pieces      []hashBytes //SHA1 hashes of every piece
 	private     bool
 
 	//Different for single-file/multiple-file system
@@ -30,4 +33,5 @@ type bencodedData struct {
 	trackers announcers
 	metaInfo metaInfo
 	infoDict infoDict
+	infoHash hashBytes
 }
