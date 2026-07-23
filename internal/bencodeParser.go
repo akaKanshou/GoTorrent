@@ -1,6 +1,7 @@
 package internal
 
 import (
+	"crypto/sha1"
 	"errors"
 	"fmt"
 	"math/rand"
@@ -126,7 +127,10 @@ func (tor *Torrent) unmarshalBencode(metaInfoMap *bencoder.BencodeDicts) error {
 	}
 	torrentInfoDict, ok := torrentInfoDictCheck.(bencoder.BencodeDicts)
 	if !ok {
-
+	}
+	err = tor.getInfoHash(torrentInfoDict)
+	if err != nil {
+		return err
 	}
 
 	//Info Dict Parsing
@@ -153,7 +157,17 @@ func (tor *Torrent) unmarshalBencode(metaInfoMap *bencoder.BencodeDicts) error {
 		return err
 	}
 
-	//todo: implement validateFiles, getInfoHash, getPieceHashes
+	piecesCheck, ok := torrentInfoDict["pieces"]
+	if !ok {
+	}
+	pieces, ok := piecesCheck.(bencoder.BencodeBytes)
+	if !ok {
+	}
+	err = tor.getPieces(pieces)
+	if err != nil {
+		return err
+	}
+	//todo: implement validateFiles
 
 	return nil
 }
@@ -224,4 +238,27 @@ func parseFiles(files bencoder.BencodingTypes, multipleFiles bool) fileSpecs {
 		fileSpecs.path = filePath
 	}
 	return fileSpecs
+}
+
+// encodes infoDict and sets torrent infoHash
+func (tor *Torrent) getInfoHash(infoDict bencoder.BencodeDicts) error {
+	b, err := bencoder.NewEncoder().Encode(infoDict)
+	if err != nil {
+		return err
+	}
+	tor.localData.infoHash = sha1.Sum(b)
+	return nil
+}
+
+// populates torrent pieces
+func (tor *Torrent) getPieces(pieces bencoder.BencodeBytes) error {
+	if len(pieces)%20 > 0 {
+		return fmt.Errorf("invalid pieces")
+	}
+
+	for i := 0; i < len(pieces); i += 20 {
+		tor.localData.infoDict.pieces = append(tor.localData.infoDict.pieces, hashBytes(pieces[i:i+20]))
+	}
+
+	return nil
 }
