@@ -129,6 +129,7 @@ func (tor *Torrent) unmarshalBencode(metaInfoMap *bencoder.BencodeDicts) error {
 
 	}
 
+	//Info Dict Parsing
 	pieceLengthCheck, ok := torrentInfoDict["piece length"]
 	if !ok {
 	}
@@ -168,66 +169,59 @@ func (tor *Torrent) getFileInfo(torrentInfoDict *bencoder.BencodeDicts) error {
 	}
 	tor.localData.infoDict.fileName = string(fileName)
 
-	if multipleFilesList, ok := (*torrentInfoDict)["files"]; ok {
+	multipleFilesList, ok := (*torrentInfoDict)["files"]
+	filesInfo := multipleFilesList.(bencoder.BencodeLists)
+	if ok {
 		tor.localData.infoDict.multipleFiles = true
-		filesInfo := multipleFilesList.(bencoder.BencodeLists)
-
 		for _, file := range filesInfo {
-			var fileSpecs fileSpecs
-			fileDict, ok := file.(bencoder.BencodeDicts)
-			if !ok {
-			}
-			fileSpecsLengthCheck, ok := fileDict["length"]
-			if !ok {
-			}
-			fileSpecsLength, ok := fileSpecsLengthCheck.(bencoder.BencodeInts)
-			fileSpecs.length = int64(fileSpecsLength)
-
-			md5Sum, ok := fileDict["md5Sum"]
-			if ok {
-				md5SumStr, ok := md5Sum.(bencoder.BencodeBytes)
-				if !ok {
-				}
-				fileSpecs.md5sum = [32]byte([]byte(md5SumStr))
-			}
-
-			filePathsCheck, ok := fileDict["path"]
-			if !ok {
-			}
-			filePaths, ok := filePathsCheck.(bencoder.BencodeLists)
-			if !ok {
-			}
-			var filePath []string
-			for _, filePathStr := range filePaths {
-				filePathStrCheck, ok := filePathStr.(bencoder.BencodeBytes)
-				if !ok {
-				}
-				filePath = append(filePath, string(filePathStrCheck))
-			}
-			fileSpecs.path = filePath
-
-			tor.localData.infoDict.fileSpecs = append(tor.localData.infoDict.fileSpecs, fileSpecs)
+			tor.localData.infoDict.fileSpecs = append(tor.localData.infoDict.fileSpecs,
+				parseFiles(file, true))
 		}
 	} else {
 		tor.localData.infoDict.multipleFiles = false
-		var fileSpecs fileSpecs
-		fileSpecsLengthCheck, ok := (*torrentInfoDict)["length"]
-		if !ok {
-		}
-		fileSpecsLength, ok := fileSpecsLengthCheck.(bencoder.BencodeInts)
-		if !ok {
-		}
-		fileSpecs.length = int64(fileSpecsLength)
+		tor.localData.infoDict.fileSpecs = append(tor.localData.infoDict.fileSpecs,
+			parseFiles(*torrentInfoDict, false))
+	}
 
-		md5Sum, ok := (*torrentInfoDict)["md5Sum"]
-		if ok {
-			md5SumStr, ok := md5Sum.(bencoder.BencodeBytes)
+	return nil
+}
+
+func parseFiles(files bencoder.BencodingTypes, multipleFiles bool) fileSpecs {
+	var fileSpecs fileSpecs
+	fileDict, ok := files.(bencoder.BencodeDicts)
+	if !ok {
+	}
+
+	fileSpecsLengthCheck, ok := fileDict["length"]
+	if !ok {
+	}
+	fileSpecsLength, ok := fileSpecsLengthCheck.(bencoder.BencodeInts)
+	fileSpecs.length = int64(fileSpecsLength)
+
+	md5Sum, ok := fileDict["md5Sum"]
+	if ok {
+		md5SumStr, ok := md5Sum.(bencoder.BencodeBytes)
+		if !ok {
+		}
+		fileSpecs.md5sum = [32]byte(md5SumStr)
+	}
+	if !ok {
+	}
+	if multipleFiles {
+		filePathsCheck, ok := fileDict["path"]
+		if !ok {
+		}
+		filePaths, ok := filePathsCheck.(bencoder.BencodeLists)
+		if !ok {
+		}
+		var filePath []string
+		for _, filePathStr := range filePaths {
+			filePathStrCheck, ok := filePathStr.(bencoder.BencodeBytes)
 			if !ok {
 			}
-			fileSpecs.md5sum = [32]byte([]byte(md5SumStr))
+			filePath = append(filePath, string(filePathStrCheck))
 		}
-
-		tor.localData.infoDict.fileSpecs = append(tor.localData.infoDict.fileSpecs, fileSpecs)
+		fileSpecs.path = filePath
 	}
-	return nil
+	return fileSpecs
 }
