@@ -11,6 +11,7 @@ import (
 	"strings"
 
 	"gitlab.com/LUwUcifer/bencoder"
+	"go.uber.org/zap"
 )
 
 func (tor *Torrent) ExtractTorrentInfo(path, dest string) error {
@@ -44,7 +45,7 @@ func (tor *Torrent) ExtractTorrentInfo(path, dest string) error {
 	tor.destPath = dest
 	tor.localData.infoDict.fileName = torrentName
 
-	err = tor.unmarshalBencode(&metaInfoMap)
+	err = tor.unmarshalBencode(metaInfoMap)
 	if err != nil {
 		return err
 	}
@@ -53,128 +54,191 @@ func (tor *Torrent) ExtractTorrentInfo(path, dest string) error {
 
 // parses all local data in torrent files
 // returns an error only if it is blocking, otherwise logs the error
-func (tor *Torrent) unmarshalBencode(metaInfoMap *bencoder.BencodeDicts) error {
+func (tor *Torrent) unmarshalBencode(metaInfoMap bencoder.BencodeDicts) error {
 	var err error
 
+	if err = tor.unmarshalTrackerData(metaInfoMap); err != nil {
+		return err
+	}
+
+	if err = tor.unmarshalMetaInfo(metaInfoMap); err != nil {
+		return err
+	}
+
+	torrentInfoDictCheck, ok := metaInfoMap["info"]
+	if !ok {
+		return MetaInfoMissingField{Field: "info"}
+	}
+	torrentInfoDict, ok := torrentInfoDictCheck.(bencoder.BencodeDicts)
+	if !ok {
+		return MetaInfoInvalidValueType{
+			field:    "info",
+			wantType: "map[string]BencodeDicts",
+			haveType: reflect.TypeOf(torrentInfoDictCheck).String(),
+		}
+	}
+
+	if err = tor.unmarshalInfoDict(torrentInfoDict); err != nil {
+		return err
+	}
+
+	return nil
+}
+
+func (tor *Torrent) unmarshalTrackerData(metaInfoMap bencoder.BencodeDicts) error {
 	//use announce-list if trackers responding, otherwise use announce
 	//https://bittorrent.org/beps/bep_0012.html
-	if announceListsListCheck, ok := (*metaInfoMap)["announceList"]; ok {
+	if announceListsListCheck, ok := metaInfoMap["announce-list"]; ok {
 		announceListsList, ok := announceListsListCheck.(bencoder.BencodeLists)
 		if !ok {
+			return MetaInfoInvalidValueType{field: "announce list", wantType: "[][]string",
+				haveType: reflect.TypeOf(announceListsListCheck).String()}
 		}
+
 		for _, announceList := range announceListsList {
 			announceListURLs, ok := announceList.(bencoder.BencodeLists)
 			if !ok {
 				return MetaInfoInvalidValueType{field: "announce list", wantType: "[]string", haveType: reflect.TypeOf(announceListURLs).String()}
 			}
+
 			var announceListURLTier []string
 			for _, announceListURL := range announceListURLs {
 				announceURL, ok := announceListURL.(bencoder.BencodeBytes)
 				if !ok {
 					return MetaInfoInvalidValueType{field: "announce list", wantType: "string", haveType: reflect.TypeOf(announceURL).String()}
 				}
+
 				announceListURLTier = append(announceListURLTier, string(announceURL))
 			}
 			tor.localData.trackers.announceList = append(tor.localData.trackers.announceList, announceListURLTier)
 		}
+	} else {
+		LogInfo("No announce-list field")
 	}
 
-	if announceURLCheck, ok := (*metaInfoMap)["announce"]; ok {
+	if announceURLCheck, ok := metaInfoMap["announce"]; ok {
 		announceURL, ok := announceURLCheck.(bencoder.BencodeBytes)
 		if !ok {
+			return MetaInfoInvalidValueType{field: "announce", wantType: "string", haveType: reflect.TypeOf(announceURL).String()}
 		}
+
 		tor.localData.trackers.announce = string(announceURL)
 	} else {
 		return MetaInfoMissingField{Field: "announce"}
 	}
 
-	commentCheck, ok := (*metaInfoMap)["comment"]
-	if !ok {
-	}
-	comment, ok := commentCheck.(bencoder.BencodeBytes)
-	if !ok {
-		//todo: implement non-blocking custom error logging
-		//https://rollbar.com/blog/golang-error-logging-guide/
-	}
-	tor.localData.metaInfo.comment = string(comment)
+	return nil
+}
 
-	createdByCheck, ok := (*metaInfoMap)["created by"]
-	if !ok {
+func (tor *Torrent) unmarshalMetaInfo(metaInfoMap bencoder.BencodeDicts) error {
+	commentCheck, ok := metaInfoMap["comment"]
+	if ok {
+		comment, ok := commentCheck.(bencoder.BencodeBytes)
+		if !ok {
+			return MetaInfoInvalidValueType{field: "comment", wantType: "string",
+				haveType: reflect.TypeOf(commentCheck).String()}
+		}
+		tor.localData.metaInfo.comment = string(comment)
 	}
-	createdBy, ok := createdByCheck.(bencoder.BencodeBytes)
-	if !ok {
-	}
-	tor.localData.metaInfo.createdBy = string(createdBy)
 
-	encodingCheck, ok := (*metaInfoMap)["encoding"]
-	if !ok {
+	createdByCheck, ok := metaInfoMap["created by"]
+	if ok {
+		createdBy, ok := createdByCheck.(bencoder.BencodeBytes)
+		if !ok {
+			return MetaInfoInvalidValueType{field: "created by", wantType: "string", haveType: reflect.TypeOf(createdByCheck).String()}
+		}
+		tor.localData.metaInfo.createdBy = string(createdBy)
 	}
-	encoding, ok := encodingCheck.(bencoder.BencodeBytes)
-	if !ok {
-	}
-	tor.localData.metaInfo.encoding = string(encoding)
 
-	creationDateCheck, ok := (*metaInfoMap)["creation date"]
-	if !ok {
+	encodingCheck, ok := metaInfoMap["encoding"]
+	if ok {
+		encoding, ok := encodingCheck.(bencoder.BencodeBytes)
+		if !ok {
+			return MetaInfoInvalidValueType{field: "encoding", wantType: "string", haveType: reflect.TypeOf(encodingCheck).String()}
+		}
+		tor.localData.metaInfo.encoding = string(encoding)
 	}
-	creationDate, ok := creationDateCheck.(bencoder.BencodeInts)
-	if !ok {
-	}
-	tor.localData.metaInfo.creationDate = int64(creationDate)
 
-	torrentInfoDictCheck, ok := (*metaInfoMap)["info"]
-	if !ok {
+	creationDateCheck, ok := metaInfoMap["creation date"]
+	if ok {
+		creationDate, ok := creationDateCheck.(bencoder.BencodeInts)
+		if !ok {
+			return MetaInfoInvalidValueType{field: "creation date", wantType: "int64",
+				haveType: reflect.TypeOf(creationDateCheck).String()}
+		}
+		tor.localData.metaInfo.creationDate = int64(creationDate)
 	}
-	torrentInfoDict, ok := torrentInfoDictCheck.(bencoder.BencodeDicts)
-	if !ok {
-	}
+
+	return nil
+}
+
+func (tor *Torrent) unmarshalInfoDict(torrentInfoDict bencoder.BencodeDicts) error {
+	var err error
+
 	err = tor.getInfoHash(torrentInfoDict)
 	if err != nil {
 		return err
 	}
 
-	//Info Dict Parsing
 	pieceLengthCheck, ok := torrentInfoDict["piece length"]
 	if !ok {
+		return MetaInfoMissingField{Field: "piece length"}
 	}
 	pieceLength, ok := pieceLengthCheck.(bencoder.BencodeInts)
 	if !ok {
+		return MetaInfoInvalidValueType{field: "piece length", wantType: "int64", haveType: reflect.TypeOf(pieceLengthCheck).String()}
 	}
 	tor.localData.infoDict.pieceLength = uint64(pieceLength)
 
-	privateCheck, okCheck := torrentInfoDict["private"]
-	private, ok := privateCheck.(bencoder.BencodeInts)
-	if !ok {
-	}
-	if !okCheck || private != 1 {
-		tor.localData.infoDict.private = false
+	privateCheck, ok := torrentInfoDict["private"]
+	if ok {
+		private, ok := privateCheck.(bencoder.BencodeInts)
+		if !ok {
+			return MetaInfoInvalidValueType{field: "private", wantType: "int64", haveType: reflect.TypeOf(privateCheck).String()}
+		}
+
+		switch private {
+		case 1:
+			tor.localData.infoDict.private = true
+			break
+
+		default:
+			LogWarn(
+				"Field info:private has invalid value. Setting private to false.",
+				zap.String("field", "private"),
+				zap.Int64("value", int64(private)),
+			)
+		case 0:
+			tor.localData.infoDict.private = false
+		}
 	} else {
-		tor.localData.infoDict.private = true
+		tor.localData.infoDict.private = false
 	}
 
-	err = tor.getFileInfo(&torrentInfoDict)
+	err = tor.getFileInfo(torrentInfoDict)
 	if err != nil {
 		return err
 	}
 
 	piecesCheck, ok := torrentInfoDict["pieces"]
 	if !ok {
+		return MetaInfoMissingField{Field: "pieces"}
 	}
 	pieces, ok := piecesCheck.(bencoder.BencodeBytes)
 	if !ok {
+		return MetaInfoInvalidValueType{field: "pieces", wantType: "string", haveType: reflect.TypeOf(piecesCheck).String()}
 	}
 	err = tor.getPieces(pieces)
 	if err != nil {
 		return err
 	}
-	//todo: implement validateFiles
 
 	return nil
 }
 
 // populates infoDict of torrent file struct
-func (tor *Torrent) getFileInfo(torrentInfoDict *bencoder.BencodeDicts) error {
-	fileNameCheck, ok := (*torrentInfoDict)["name"]
+func (tor *Torrent) getFileInfo(torrentInfoDict bencoder.BencodeDicts) error {
+	fileNameCheck, ok := torrentInfoDict["name"]
 	if !ok {
 	}
 	fileName, ok := fileNameCheck.(bencoder.BencodeBytes)
@@ -183,7 +247,7 @@ func (tor *Torrent) getFileInfo(torrentInfoDict *bencoder.BencodeDicts) error {
 	}
 	tor.localData.infoDict.fileName = string(fileName)
 
-	multipleFilesList, ok := (*torrentInfoDict)["files"]
+	multipleFilesList, ok := torrentInfoDict["files"]
 	filesInfo := multipleFilesList.(bencoder.BencodeLists)
 	if ok {
 		tor.localData.infoDict.multipleFiles = true
@@ -194,7 +258,7 @@ func (tor *Torrent) getFileInfo(torrentInfoDict *bencoder.BencodeDicts) error {
 	} else {
 		tor.localData.infoDict.multipleFiles = false
 		tor.localData.infoDict.fileSpecs = append(tor.localData.infoDict.fileSpecs,
-			parseFiles(*torrentInfoDict, false))
+			parseFiles(torrentInfoDict, false))
 	}
 
 	return nil

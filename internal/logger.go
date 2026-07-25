@@ -5,6 +5,7 @@ import (
 	"os"
 
 	"go.uber.org/zap"
+	"go.uber.org/zap/zapcore"
 )
 
 var logger *zap.Logger
@@ -16,7 +17,8 @@ func init() {
 	}
 
 	config := zap.NewDevelopmentConfig()
-	config.OutputPaths = []string{"stderr", "./temp/logs/output"}
+	config.EncoderConfig.EncodeTime = zapcore.TimeEncoderOfLayout("2006-01-02 15:04:05")
+	config.OutputPaths = []string{"./temp/logs/output"}
 	config.ErrorOutputPaths = []string{"stderr", "./temp/logs/errorOutput"}
 
 	logger, err = config.Build()
