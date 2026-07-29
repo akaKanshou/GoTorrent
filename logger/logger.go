@@ -1,4 +1,4 @@
-package internal
+package logger
 
 import (
 	"fmt"
@@ -8,7 +8,7 @@ import (
 	"go.uber.org/zap/zapcore"
 )
 
-var logger *zap.Logger
+var Logger *zap.Logger
 
 func init() {
 	err := os.MkdirAll("./temp/logs", os.ModeDir|os.ModePerm)
@@ -21,16 +21,16 @@ func init() {
 	config.OutputPaths = []string{"./temp/logs/output"}
 	config.ErrorOutputPaths = []string{"stderr", "./temp/logs/errorOutput"}
 
-	logger, err = config.Build()
+	Logger, err = config.Build()
 	if err != nil {
 		panic(err)
 	}
 
-	logger.Info("Logger initialized")
+	Logger.Info("Logger initialized")
 }
 
 func SyncLog() {
-	if err := logger.Sync(); err != nil {
+	if err := Logger.Sync(); err != nil {
 		fmt.Println(err)
 	}
 }
