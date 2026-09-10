@@ -1,6 +1,7 @@
 package internal
 
 import (
+	"bytes"
 	"encoding/binary"
 	"errors"
 )
@@ -25,8 +26,57 @@ const (
 	peerwirePieceID
 	peerwireCancelID
 	peerwirePortID
-	peerwireKeepAliveID
+	peerwireKeepAliveID // Not defined by spec - only for the application's use
 )
+
+// <pstrlen><pstr><reserved><info_hash><peer_id>
+type handshakeMessage struct {
+	// The peerID of the client/peer
+	peerID peerID
+
+	// The infoHash of the torrent
+	infoHash hashBytes
+
+	// The extensions supported by the client/peer
+	options uint64
+}
+
+func (h *handshakeMessage) marshalMessage() []byte {
+	message := make([]byte, 49+lenPStr)
+
+	message[0] = byte(lenPStr)
+	copy(message[1:], pStr)
+
+	binary.BigEndian.PutUint64(message[1+lenPStr:], h.options)
+
+	copy(message[infoHashOffset:], h.infoHash[:])
+	copy(message[peerIDOffset:], h.peerID[:])
+	return message
+}
+
+func (h *handshakeMessage) unmarshalMessage(handshake []byte) error {
+	if len(handshake) != handshakeLength {
+		return handshakeInvalidLengthError
+	}
+	pLenPStr := handshake[0]
+	if int(pLenPStr) != lenPStr { // protocol constant
+		return handshakeInvalidLengthError
+	}
+	if string(handshake[1:1+lenPStr]) != pStr {
+		return handshakeInvalidPStrError
+	}
+	h.options = binary.BigEndian.Uint64(handshake[1+lenPStr:])
+	copy(h.infoHash[:], handshake[infoHashOffset:infoHashOffset+20])
+	copy(h.peerID[:], handshake[peerIDOffset:peerIDOffset+20])
+	return nil
+}
+
+func (h *handshakeMessage) validateAgainstHandshake(init *handshakeMessage) error {
+	if bytes.Compare(init.infoHash[:], h.infoHash[:]) != 0 {
+		return handshakeMismatchInfoHashError
+	}
+	return nil
+}
 
 // A peerwire message
 type peerwireMessage interface {
@@ -336,8 +386,11 @@ func (p *portMessage) unmarshalMessage(payload []byte) error {
 
 var (
 	invalidMessageLengthError = errors.New("invalid message length")
-	invalidPayloadLengthError = errors.New("invalid payload length")
 	invalidMessageIDError     = errors.New("invalid message ID")
+
+	handshakeInvalidLengthError    = errors.New("invalid handshake length")
+	handshakeInvalidPStrError      = errors.New("invalid handshake pStr")
+	handshakeMismatchInfoHashError = errors.New("handshake mismatch hash")
 
 	bitfieldSpareBitSetError    = errors.New("bitfield spare bit set")
 	bitfieldLengthTooShortError = errors.New("bitfield length too short, does not cover all pieces")
