@@ -107,7 +107,8 @@ func (tor *Torrent) unmarshalBencode(metaInfoMap bencoder.BencodeDicts) error {
 func (tor *Torrent) unmarshalTrackerData(metaInfoMap bencoder.BencodeDicts) error {
 	//use announce-list if trackers responding, otherwise use announce
 	//https://bittorrent.org/beps/bep_0012.html
-	if announceListsListCheck, ok := metaInfoMap["announce-list"]; ok {
+	announceListsListCheck, announceListOk := metaInfoMap["announce-list"]
+	if announceListOk {
 		announceListsList, ok := announceListsListCheck.(bencoder.BencodeLists)
 		if !ok {
 			logger.Logger.Error("Missing 'announce-list' key", zap.String("torrentName", tor.torrName))
@@ -138,7 +139,7 @@ func (tor *Torrent) unmarshalTrackerData(metaInfoMap bencoder.BencodeDicts) erro
 		logger.Logger.Info("No announce-list field")
 	}
 
-	if announceURLCheck, ok := metaInfoMap["announce"]; ok {
+	if announceURLCheck, ok := metaInfoMap["announce"]; ok && !announceListOk {
 		announceURL, ok := announceURLCheck.(bencoder.BencodeBytes)
 		if !ok {
 			logger.Logger.Error("Missing 'announce' key", zap.String("torrentName", tor.torrName))
@@ -146,7 +147,7 @@ func (tor *Torrent) unmarshalTrackerData(metaInfoMap bencoder.BencodeDicts) erro
 		}
 
 		tor.localData.trackers.announce = string(announceURL)
-	} else {
+	} else if !ok {
 		logger.Logger.Error("Missing 'announce' key", zap.String("torrentName", tor.torrName))
 		return MetaInfoMissingField{Field: "announce"}
 	}
@@ -294,8 +295,8 @@ func (tor *Torrent) getFileInfo(torrentInfoDict bencoder.BencodeDicts) error {
 	tor.localData.infoDict.fileName = string(fileName)
 
 	multipleFilesList, ok := torrentInfoDict["files"]
-	filesInfo := multipleFilesList.(bencoder.BencodeLists)
 	if ok {
+		filesInfo := multipleFilesList.(bencoder.BencodeLists)
 		logger.Logger.Info("Torrent is multi-file", zap.String("torrentName", tor.torrName))
 
 		tor.localData.infoDict.multipleFiles = true
@@ -355,6 +356,10 @@ func (tor *Torrent) parseFiles(files bencoder.BencodingTypes) (fileSpecs, error)
 		return fileSpecs, MetaInfoMissingField{Field: "length"}
 	}
 	fileSpecsLength, ok := fileSpecsLengthCheck.(bencoder.BencodeInts)
+	if !ok {
+		logger.Logger.Error("Invalid value in files", zap.String("torrentName", tor.torrName))
+		return fileSpecs, MetaInfoInvalidValueType{field: "length", wantType: "int", haveType: reflect.TypeOf(fileSpecsLengthCheck).String()}
+	}
 	fileSpecs.length = int64(fileSpecsLength)
 
 	md5Sum, ok := fileDict["md5Sum"]
