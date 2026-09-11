@@ -3,6 +3,13 @@ package internal
 import (
 	"encoding/binary"
 	"errors"
+	"fmt"
+	"math/rand/v2"
+	"net"
+	"time"
+
+	"gitlab.com/LUwUcifer/gotorrent/logger"
+	"go.uber.org/zap"
 )
 
 const (
@@ -14,6 +21,13 @@ const (
 	actionAnnounce
 	actionScrape
 	actionError
+)
+
+const (
+	udpEventNone uint32 = iota
+	udpEventCompleted
+	udpEventStarted
+	udpEventStopped
 )
 
 type connectionRequest struct {
@@ -168,3 +182,120 @@ var (
 	udpTrackerInvalidResponseAction    = errors.New("UDP tracker invalid response action")
 	udpTrackerAnnounceResponseTooShort = errors.New("UDP tracker announce response too short")
 )
+
+func (tr *trackerUDP) getTimeout() time.Duration {
+	return 15 * (1 << tr.retryCounter) * time.Second
+}
+
+// connect gets the connection required for the UDP Tracker protocol
+func (tr *trackerUDP) connect() error {
+	trConn, err := net.DialTimeout("udp4", tr.trackerData.metaData.announceUrl, tr.getTimeout())
+	if err != nil {
+		return err
+	}
+	defer trConn.Close()
+
+	request := connectionRequest{
+		transactionID: rand.Uint32(),
+	}
+	buffer := request.marshalRequest()
+	trConn.SetWriteDeadline(time.Now().Add(tr.getTimeout()))
+	_, err = trConn.Write(buffer)
+	if err != nil {
+		return err
+	}
+
+	buffer = make([]byte, 4096)
+	trConn.SetReadDeadline(time.Now().Add(tr.getTimeout()))
+	_, err = trConn.Read(buffer)
+	if err != nil {
+		return err
+	}
+
+	response := connectionResponse{}
+	err = response.unmarshalResponse(buffer)
+	if err != nil {
+		return err
+	}
+
+	tr.connectionID = response.connectionID
+	return nil
+}
+
+// announce announces to the tracker, returning an slice of strings representing IPv4 peer addresses
+func (tr *trackerUDP) announce(infoHash hashBytes, peerID peerID, sizeData torrentSizeData, key, event,
+	numwant uint32, port uint16) ([]string, error) {
+	var err error
+
+	if time.Since(tr.lastConnect) > time.Minute {
+		err = tr.connect()
+		if err != nil {
+			tr.retryCounter = min(tr.retryCounter+1, 8)
+			return nil, err
+		}
+		tr.lastConnect = time.Now()
+		tr.retryCounter = 0
+		logger.Logger.Info("trackerUDP announce connect success", zap.String("tracker", tr.trackerData.metaData.announceUrl))
+	}
+
+	trConn, err := net.DialTimeout("udp4", tr.trackerData.metaData.announceUrl, tr.getTimeout())
+	if err != nil {
+		return nil, err
+	}
+	defer trConn.Close()
+
+	request := announceReq{
+		connectionID:  tr.connectionID,
+		action:        actionAnnounce,
+		transactionID: rand.Uint32(),
+		infoHash:      infoHash,
+		peerID:        peerID,
+		downloaded:    sizeData.Downloaded,
+		left:          sizeData.Left,
+		uploaded:      sizeData.Uploaded,
+		event:         event,
+		key:           key,
+		numWant:       numwant,
+		port:          port,
+	}
+
+	buffer := request.marshalRequest()
+	trConn.SetWriteDeadline(time.Now().Add(tr.getTimeout()))
+	_, err = trConn.Write(buffer)
+	if err != nil {
+		return nil, err
+	}
+
+	buffer = make([]byte, 4096)
+	trConn.SetReadDeadline(time.Now().Add(tr.getTimeout()))
+	n, err := trConn.Read(buffer)
+	if err != nil {
+		return nil, err
+	}
+
+	response := announceResponse{}
+	err = response.unmarshalResponse(buffer[:n])
+	if err != nil {
+		return nil, err
+	}
+
+	return v4AddressesFromBytes(response.peerAddressesBytes), nil
+}
+
+// v4AddressesFromBytes converts every 6 bytes of data to a IPv4 address string of the form xx.xx.xx.xx:yy
+// If not enough bytes remain to form another address, the bytes are dropped.
+func v4AddressesFromBytes(data []byte) []string {
+	addresses := make([]string, 0, len(data)/6)
+	for i := 0; i+6 <= len(data); i += 6 {
+		addr := fmt.Sprintf("%d.%d.%d.%d:%d",
+			data[i+0],
+			data[i+1],
+			data[i+2],
+			data[i+3],
+			binary.BigEndian.Uint16(data[i+4:i+6]),
+		)
+
+		addresses = append(addresses, addr)
+	}
+	return addresses
+}

@@ -1,7 +1,6 @@
 package internal
 
 import (
-	"fmt"
 	"math/rand/v2"
 	"strings"
 
@@ -72,7 +71,6 @@ func initTrackerList(announceList [][]string) [][]tracker {
 
 		}
 
-		fmt.Println(trackers)
 		if len(trackers) == 0 {
 			continue
 		}

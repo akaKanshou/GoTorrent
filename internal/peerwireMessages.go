@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/binary"
 	"errors"
+	"math/rand"
 )
 
 const (
@@ -465,4 +466,34 @@ func parseMessage(message []byte) (peerwireMessage, error) {
 		return nil, err
 	}
 	return pwMessage, nil
+}
+
+const (
+	clientID            = "GT"
+	majorVersionNumber  = "0"
+	minorVersionNumber  = "1"
+	bugfixVersionNumber = "0" //Hexadecimal
+
+	letterBytes = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ"
+)
+
+func randStringBytes(n int) []byte {
+	b := make([]byte, n)
+	for i := range b {
+		b[i] = letterBytes[rand.Int63()%int64(len(letterBytes))]
+	}
+	return b
+}
+
+func peerIDGenerate() peerID {
+	//Generates peerID following Azereus-Style
+	//https://wiki.theory.org/BitTorrentSpecification#peer_id
+
+	var peerID peerID
+
+	prefix := "-" + clientID + majorVersionNumber + minorVersionNumber + bugfixVersionNumber + "0-"
+	copy(peerID[:], prefix)
+	copy(peerID[len(prefix):], randStringBytes(20-len(prefix)))
+
+	return peerID
 }
