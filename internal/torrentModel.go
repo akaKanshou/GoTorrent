@@ -5,9 +5,10 @@ type Torrent struct {
 	destPath string
 	torrName string
 
-	localData       bencodedData
-	networkDataUDP  []trackerUDP
-	networkDataHTTP []trackerHTTP
+	localData bencodedData
+
+	// 2-Dimensional tracker list for tiered announce-list
+	trackers [][]tracker
 }
 
 func NewTorrent() *Torrent {

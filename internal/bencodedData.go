@@ -1,7 +1,10 @@
 package internal
 
 type announcers struct {
-	announce     string
+	// Tiered-announce list.
+	// In case of only an 'announce' key, announceList has one tier containing that one announce.
+	// The reasoning behind this is that further difference in implementations between the two keys can be avoided
+	// this way
 	announceList [][]string
 }
 type metaInfo struct {

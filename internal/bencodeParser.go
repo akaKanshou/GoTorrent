@@ -146,12 +146,13 @@ func (tor *Torrent) unmarshalTrackerData(metaInfoMap bencoder.BencodeDicts) erro
 			return MetaInfoInvalidValueType{field: "announce", wantType: "string", haveType: reflect.TypeOf(announceURL).String()}
 		}
 
-		tor.localData.trackers.announce = string(announceURL)
+		tor.localData.trackers.announceList = [][]string{{string(announceURL)}}
 	} else if !ok {
 		logger.Logger.Error("Missing 'announce' key", zap.String("torrentName", tor.torrName))
 		return MetaInfoMissingField{Field: "announce"}
 	}
 
+	tor.trackers = initTrackerList(tor.localData.trackers.announceList)
 	logger.Logger.Info("Unmarshalled torrent tracker data", zap.String("torrentName", tor.torrName))
 	return nil
 }
