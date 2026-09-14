@@ -1,12 +1,18 @@
 package internal
 
 import (
+	"encoding/binary"
 	"errors"
+	"fmt"
 	"net"
 	"time"
 
 	"gitlab.com/LUwUcifer/gotorrent/logger"
 	"go.uber.org/zap"
+)
+
+const (
+	maxTCPBufferSize = 4096
 )
 
 // initListener inits a *net.TCPListener, trying the range of ports 6881-6889
@@ -70,16 +76,60 @@ func (torrentPlayer *TorrentPlayer) initiateHandshake(peerAddr string) {
 	}
 	logger.Logger.Info("handshake successful", zap.String("peer", peerAddr))
 
-	//torrentPlayer.peerChan <- &peer{
-	//	conn:    peerConn,
-	//	peerID:  res.peerID,
-	//	options: res.options,
-	//
-	//	amChoking:      true,
-	//	amInterested:   false,
-	//	peerChoking:    true,
-	//	peerInterested: false,
-	//}
+	torrentPlayer.peerChan <- &peer{
+		conn:    peerConn,
+		peerID:  res.peerID,
+		options: res.options,
+
+		amChoking:      true,
+		amInterested:   false,
+		peerChoking:    true,
+		peerInterested: false,
+
+		destroyed: false,
+	}
+}
+
+func (torrentPlayer *TorrentPlayer) listenToPeer(peer *peer) {
+	defer torrentPlayer.Wg.Done()
+
+	buffer := make([]byte, 4, torrentPlayer.torrent.localData.infoDict.pieceLength)
+	var err error
+	logger.Logger.Debug("listening to peer", zap.String("peer", peer.conn.RemoteAddr().String()))
+	for {
+		err = readNBytes(buffer[:], peer.conn, 4)
+		length := int(binary.BigEndian.Uint32(buffer[:4]))
+
+		if len(buffer) < 4+length {
+			buffer = append(buffer, make([]byte, length+4-len(buffer))...)
+		}
+
+		err = readNBytes(buffer[4:], peer.conn, length)
+		if err != nil {
+			break
+		}
+
+		_, err = parseMessage(buffer[:4+length])
+		if err != nil {
+			break
+		}
+
+		logger.Logger.Debug("Message received", zap.String("peer", peer.conn.RemoteAddr().String()),
+			zap.String("buffer", fmt.Sprintf("%x", buffer[:length])))
+	}
+	logger.Logger.Error("could not read from peer", zap.String("peer", peer.conn.RemoteAddr().String()), zap.Error(err))
+}
+
+func readNBytes(buffer []byte, conn net.Conn, length int) error {
+	seek := 0
+	for seek != length {
+		n, err := conn.Read(buffer[seek:length])
+		if err != nil {
+			return err
+		}
+		seek += n
+	}
+	return nil
 }
 
 var (
