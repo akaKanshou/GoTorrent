@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"gitlab.com/LUwUcifer/gotorrent/logger"
+	"go.loafoe.dev/bitfield/v2"
 	"go.uber.org/zap"
 )
 
@@ -86,6 +87,10 @@ func (torrentPlayer *TorrentPlayer) initiateHandshake(peerAddr string) {
 		peerChoking:    true,
 		peerInterested: false,
 
+		piecesAvailable: bitfield.BigEndian.New(uint64(len(torrentPlayer.torrent.localData.infoDict.pieces))),
+
+		lastMessage: time.Now(),
+
 		destroyed: false,
 	}
 }
@@ -109,13 +114,18 @@ func (torrentPlayer *TorrentPlayer) listenToPeer(peer *peer) {
 			break
 		}
 
-		_, err = parseMessage(buffer[:4+length])
+		message, err := parseMessage(buffer[:4+length])
 		if err != nil {
 			break
 		}
 
 		logger.Logger.Debug("Message received", zap.String("peer", peer.conn.RemoteAddr().String()),
-			zap.String("buffer", fmt.Sprintf("%x", buffer[:length])))
+			zap.String("buffer", fmt.Sprintf("%x", buffer[:4+length])))
+
+		err = torrentPlayer.handleMessage(peer, message)
+		if err != nil {
+			break
+		}
 	}
 	logger.Logger.Error("could not read from peer", zap.String("peer", peer.conn.RemoteAddr().String()), zap.Error(err))
 }
@@ -132,6 +142,89 @@ func readNBytes(buffer []byte, conn net.Conn, length int) error {
 	return nil
 }
 
+func (torrentPlayer *TorrentPlayer) handleMessage(rPeer *peer, message peerwireMessage) error {
+	var err error
+	switch message.messageType() {
+	case peerwireChokeID:
+		rPeer.peerChoking = true
+		logger.Logger.Debug("peer choked client", zap.String("peer", rPeer.conn.RemoteAddr().String()),
+			zap.String("peerID", string(rPeer.peerID[:])))
+		break
+	case peerwireUnchokeID:
+		rPeer.peerChoking = false
+		logger.Logger.Debug("peer unchoked client", zap.String("peer", rPeer.conn.RemoteAddr().String()),
+			zap.String("peerID", string(rPeer.peerID[:])))
+		break
+	case peerwireInterestedID:
+		rPeer.peerInterested = true
+		logger.Logger.Debug("peer interested in client", zap.String("peer", rPeer.conn.RemoteAddr().String()),
+			zap.String("peerID", string(rPeer.peerID[:])))
+		break
+	case peerwireNotInterestedID:
+		rPeer.peerInterested = false
+		logger.Logger.Debug("peer not interested in client", zap.String("peer", rPeer.conn.RemoteAddr().String()),
+			zap.String("peerID", string(rPeer.peerID[:])))
+		break
+	case peerwireHaveID:
+		pwHaveMessage := message.(*haveMessage)
+		err = rPeer.piecesAvailable.SetBit(uint64(pwHaveMessage.pieceIndex))
+		break
+	case peerwireBitfieldID:
+		pwBitfieldMessage := message.(*bitfieldMessage)
+		err = torrentPlayer.setBitfield(rPeer, pwBitfieldMessage.bitfieldData)
+		logger.Logger.Debug("Setting bitfield", zap.String("peer", string(rPeer.peerID[:])), zap.String("bitfield",
+			fmt.Sprintf("%x", rPeer.piecesAvailable.Bytes())))
+		break
+	case peerwireRequestID:
+	case peerwirePieceID:
+	case peerwireCancelID:
+	case peerwirePortID:
+		logger.Logger.Debug("Unimplemented message", zap.String("peer", string(rPeer.peerID[:])),
+			zap.Uint8("messageID", message.messageType()))
+		break
+	case peerwireKeepAliveID:
+		logger.Logger.Debug("Keep-alive message", zap.String("peer", string(rPeer.peerID[:])))
+		break
+	}
+
+	if err != nil {
+		rPeer.destroyed = true
+		torrentPlayer.peerChan <- rPeer
+	}
+
+	// Update the lastCommunicated of the peer
+	rPeer.lastMessage = time.Now()
+	return nil
+}
+
+func (torrentPlayer *TorrentPlayer) setBitfield(rPeer *peer, pwBitfield []byte) error {
+	bfLength, numPieces := len(pwBitfield), len(torrentPlayer.torrent.localData.infoDict.pieces)
+
+	// Check if length of pwBitField is valid
+	// ceiling(numPieces/8) == bitfieldLength
+	if bfLength != (numPieces+7)/8 {
+		return bitfieldLengthInvalid
+	}
+
+	// Check if spare of pwBitFields are not set
+	nSpareBits := (8 - numPieces%8) % 8
+	spareBits := ((1 << nSpareBits) - 1) & pwBitfield[bfLength-1]
+	if spareBits != 0 {
+		return bitfieldSpareBitsSet
+	}
+
+	// Set all bits
+	rPeer.piecesAvailable = bitfield.BigEndian.FromBytes(
+		pwBitfield,
+		uint64(len(torrentPlayer.torrent.localData.infoDict.pieces)),
+	)
+
+	return nil
+}
+
 var (
 	listenerInitFailed = errors.New("failed to create tcp listener")
+
+	bitfieldLengthInvalid = errors.New("bitfield length is invalid")
+	bitfieldSpareBitsSet  = errors.New("bitfield spare bits set")
 )

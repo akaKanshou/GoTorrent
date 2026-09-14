@@ -3,6 +3,8 @@ package internal
 import (
 	"net"
 	"time"
+
+	"go.loafoe.dev/bitfield/v2"
 )
 
 //Min Announce for UDP
@@ -19,6 +21,12 @@ type peer struct {
 	amInterested   bool
 	peerChoking    bool
 	peerInterested bool
+
+	// Pieces that the piece has available for sharing, as reported by the peer
+	piecesAvailable *bitfield.BitField
+
+	// Last time peer sent or received a message. If time since lastMessage > 2 minutes, drop peer
+	lastMessage time.Time
 
 	// If this is an invalid or a dummy peer used to indicate a removal
 	// If destroyed is set to true, do not use peer
