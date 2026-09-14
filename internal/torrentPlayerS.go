@@ -29,6 +29,11 @@ type TorrentPlayer struct {
 	key           uint32 // persistent across sessions?
 	listeningPort uint16
 	listener      *net.TCPListener
+
+	peers    []*peer    // List of currently connected and active peers
+	peerChan chan *peer // Channel managing to addition and removal of peers.
+
+	Wg sync.WaitGroup
 }
 
 // NewTorrentPlayer returns a new uninitialized torrent player
@@ -87,11 +92,20 @@ func (torrentPlayer *TorrentPlayer) startTorrent() error {
 	}
 	logger.Logger.Info("Acquired peer addresses", zap.Strings("peers", peerAdds))
 
+	for _, peerAddr := range peerAdds {
+		go torrentPlayer.initiateHandshake(peerAddr)
+		torrentPlayer.Wg.Add(1)
+	}
+
+	torrentPlayer.Wg.Wait()
+
 	return nil
+
 }
 
 func (torrentPlayer *TorrentPlayer) pauseTorrent() error {
 	return nil
+
 }
 
 func (torrentPlayer *TorrentPlayer) stopTorrent() error {
@@ -106,6 +120,7 @@ func (torrentPlayer *TorrentPlayer) getPeersFromTrackers(numwant int) ([]string,
 			switch iTracker.getProtocol() {
 			case pUDP:
 				udpTracker := iTracker.(*trackerUDP)
+
 				tPeerAdds, err = udpTracker.announce(
 					torrentPlayer.torrent.localData.infoHash,
 					torrentPlayer.peerID,
@@ -124,7 +139,8 @@ func (torrentPlayer *TorrentPlayer) getPeersFromTrackers(numwant int) ([]string,
 			}
 
 			if err != nil {
-				return nil, err
+				logger.Logger.Error("Failed to announce peer", zap.Int("tier", j), zap.Error(err))
+				continue
 			} else if len(tPeerAdds) == 0 {
 				continue
 			}

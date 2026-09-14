@@ -1,15 +1,28 @@
 package internal
 
-import "time"
+import (
+	"net"
+	"time"
+)
 
 //Min Announce for UDP
 //TODO: Check port properties, whether to implement in tracker get struct
 
 type peerID [20]byte
 type peer struct {
-	host   string
-	port   uint16
+	conn   net.Conn
 	peerID peerID
+
+	options uint64 // BitTorrent extensions supported by the peer
+
+	amChoking      bool
+	amInterested   bool
+	peerChoking    bool
+	peerInterested bool
+
+	// If this is an invalid or a dummy peer used to indicate a removal
+	// If destroyed is set to true, do not use peer
+	destroyed bool
 }
 
 type metaData struct {
