@@ -279,6 +279,10 @@ func (tr *trackerUDP) announce(infoHash hashBytes, peerID peerID, sizeData torre
 		return nil, err
 	}
 
+	tr.trackerData.leechers = response.leechers
+	tr.trackerData.seeders = response.seeders
+	tr.trackerData.interval = time.Second * time.Duration(response.interval)
+	tr.lastAnnounce = time.Now()
 	return v4AddressesFromBytes(response.peerAddressesBytes), nil
 }
 

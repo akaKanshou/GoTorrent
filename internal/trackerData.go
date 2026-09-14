@@ -37,6 +37,7 @@ type trackerUDP struct {
 	retryCounter uint32
 	connectionID uint64
 	lastConnect  time.Time
+	lastAnnounce time.Time
 }
 
 // TODO: Implement HTTP error handling
