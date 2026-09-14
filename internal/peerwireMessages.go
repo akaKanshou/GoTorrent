@@ -417,7 +417,7 @@ func parseMessage(message []byte) (peerwireMessage, error) {
 		return nil, invalidMessageLengthError
 	}
 
-	if messageLength == 4 {
+	if messageLength == 0 {
 		// keep-alive: <len=0000>
 		return &keepAliveMessage{}, nil
 	}
