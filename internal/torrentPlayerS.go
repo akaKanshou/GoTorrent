@@ -36,6 +36,8 @@ type TorrentPlayer struct {
 	peerChan chan *peer // Channel managing to addition and removal of peers.
 
 	Wg sync.WaitGroup
+
+	fileManager fileManager
 }
 
 // NewTorrentPlayer returns a new uninitialized torrent player
@@ -88,10 +90,14 @@ func (torrentPlayer *TorrentPlayer) addTorrent(torrent *Torrent) error {
 	}
 	logger.Logger.Info("Initialized TCP Listener", zap.Uint16("port", torrentPlayer.listeningPort),
 		zap.String("peerID", string(torrentPlayer.peerID[:])))
+
+	torrentPlayer.fileManager = fileManager{destination: torrent.destPath}
+	err = torrentPlayer.fileManager.initFiles(torrent.localData.infoDict)
 	return nil
 }
 
 func (torrentPlayer *TorrentPlayer) startTorrent() error {
+
 	torrentPlayer.state = playerStarted
 	peerAdds, err := torrentPlayer.getPeersFromTrackers(40)
 	if err != nil {
