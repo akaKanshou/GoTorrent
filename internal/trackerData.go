@@ -5,15 +5,16 @@ import "time"
 //Min Announce for UDP
 //TODO: Check port properties, whether to implement in tracker get struct
 
+type peerID [20]byte
 type peer struct {
 	host   string
 	port   uint16
-	peerID string
+	peerID peerID
 }
 
 type metaData struct {
 	announceUrl string
-	infoHash    [20]byte
+	infoHash    hashBytes
 }
 
 type torrentSizeData struct {
@@ -36,6 +37,7 @@ type trackerUDP struct {
 	retryCounter uint32
 	connectionID uint64
 	lastConnect  time.Time
+	lastAnnounce time.Time
 }
 
 // TODO: Implement HTTP error handling
