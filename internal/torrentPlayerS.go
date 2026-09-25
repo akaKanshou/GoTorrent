@@ -8,7 +8,7 @@ import (
 	"sync"
 	"time"
 
-	"gitlab.com/LUwUcifer/gotorrent/logger"
+	"gitlab.com/akaKanshou/gotorrent/logger"
 	"go.uber.org/zap"
 )
 

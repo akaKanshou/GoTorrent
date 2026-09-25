@@ -7,7 +7,7 @@ import (
 	"net"
 	"time"
 
-	"gitlab.com/LUwUcifer/gotorrent/logger"
+	"gitlab.com/akaKanshou/gotorrent/logger"
 	"go.loafoe.dev/bitfield/v2"
 	"go.uber.org/zap"
 )

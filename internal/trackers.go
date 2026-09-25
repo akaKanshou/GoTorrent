@@ -4,7 +4,7 @@ import (
 	"math/rand/v2"
 	"strings"
 
-	"gitlab.com/LUwUcifer/gotorrent/logger"
+	"gitlab.com/akaKanshou/gotorrent/logger"
 	"go.uber.org/zap"
 )
 
