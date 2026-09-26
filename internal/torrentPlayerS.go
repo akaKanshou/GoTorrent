@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"gitlab.com/akaKanshou/gotorrent/logger"
+	"go.loafoe.dev/bitfield/v2"
 	"go.uber.org/zap"
 )
 
@@ -91,7 +92,11 @@ func (torrentPlayer *TorrentPlayer) addTorrent(torrent *Torrent) error {
 	logger.Logger.Info("Initialized TCP Listener", zap.Uint16("port", torrentPlayer.listeningPort),
 		zap.String("peerID", string(torrentPlayer.peerID[:])))
 
-	torrentPlayer.fileManager = fileManager{destination: torrent.destPath}
+	torrentPlayer.fileManager = fileManager{
+		destination: torrent.destPath,
+		piecesDone:  bitfield.BigEndian.New(uint64(len(torrent.localData.infoDict.pieces))),
+		pieceLength: int64(torrent.localData.infoDict.pieceLength),
+	}
 	err = torrentPlayer.fileManager.initFiles(torrent.localData.infoDict)
 	return nil
 }
