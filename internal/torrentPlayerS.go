@@ -104,6 +104,9 @@ func (torrentPlayer *TorrentPlayer) addTorrent(torrent *Torrent) error {
 func (torrentPlayer *TorrentPlayer) startTorrent() error {
 
 	torrentPlayer.state = playerStarted
+	go torrentPlayer.eventLoop()
+	torrentPlayer.Wg.Add(1)
+
 	peerAdds, err := torrentPlayer.getPeersFromTrackers(40)
 	if err != nil {
 		return err
@@ -185,16 +188,17 @@ func (torrentPlayer *TorrentPlayer) acceptPeers(nPeer *peer) {
 		zap.String("peerIPAddr", nPeer.conn.LocalAddr().String()))
 
 	go torrentPlayer.listenToPeer(nPeer)
-	torrentPlayer.Wg.Add(1)
+	go torrentPlayer.keepAlive(nPeer)
+	torrentPlayer.Wg.Add(2)
 }
 
 func (torrentPlayer *TorrentPlayer) destroyPeer(nPeer *peer) {
-	nPeer.destroyed.Store(true)
 	index := slices.IndexFunc(torrentPlayer.peers, func(rPeer *peer) bool {
 		return slices.Compare(nPeer.peerID[:], rPeer.peerID[:]) == 0
 	})
 	if index == -1 {
 		logger.Logger.Warn("Tried to destroy non-existent peer", zap.String("peer", string(nPeer.peerID[:])))
+		return
 	} else {
 		// Have not used slices.Delete in favor of this homemade deletion for efficient deletion
 		lenPeers := len(torrentPlayer.peers)
@@ -202,6 +206,7 @@ func (torrentPlayer *TorrentPlayer) destroyPeer(nPeer *peer) {
 		torrentPlayer.peers[index] = torrentPlayer.peers[lenPeers-1]
 		torrentPlayer.peers = torrentPlayer.peers[:lenPeers-1]
 	}
+	logger.Logger.Debug("Destroyed peer", zap.String("peer", string(nPeer.peerID[:])))
 }
 
 var (
@@ -234,14 +239,56 @@ func (torrentPlayer *TorrentPlayer) eventLoop() {
 			err = torrentPlayer.handleMessage(incomingMessageEvent.peer, incomingMessageEvent.message)
 			if err != nil {
 				logger.Logger.Error("Failed to handle incoming message", zap.Error(err))
+				// TODO: Add check if error was peer-side or client-side
+				torrentPlayer.destroyPeer(incomingMessageEvent.peer)
 			}
-			// TODO: Add check if error was peer-side or client-side
-			torrentPlayer.destroyPeer(incomingMessageEvent.peer)
 			continue
 
-		case tpPieceResponsibilityReqEvent:
-			_ = event.(*pieceResponsibilityReqEvent)
-			// TODO: Implement
+		case tpPeerAvailableForDownloadEvent:
+			peerAvailableForDownloadEvent := event.(*peerAvailableForDownloadEvent)
+			index := torrentPlayer.fileManager.getPieceToDownload(peerAvailableForDownloadEvent.peer.piecesAvailable)
+			if index == -1 {
+				logger.Logger.Debug("Peer does not have any relevant pieces", zap.String("peer", string(peerAvailableForDownloadEvent.peer.peerID[:])))
+				peerAvailableForDownloadEvent.peer.amInterested = false
+				go torrentPlayer.sendMessage(peerAvailableForDownloadEvent.peer, &notInterestedMessage{})
+			} else {
+				pieceLen := torrentPlayer.fileManager.getPieceLength(index)
+				torrentPlayer.fileManager.piecesInProgress[index] = peerAvailableForDownloadEvent.peer
+				peerAvailableForDownloadEvent.peer.initBuffers(pieceLen)
+				torrentPlayer.sendMessage(peerAvailableForDownloadEvent.peer, newPipedRequestsMessage(index, pieceLen))
+			}
+			continue
+		}
+	}
+}
+
+// keepAlive tries sending keep alive at regular intervals of inactivity.
+// Inactivity is reset at every incoming and outgoing message from the peer
+// At 2 minutes of inactivity, peer is dropped.
+func (torrentPlayer *TorrentPlayer) keepAlive(rPeer *peer) {
+	defer torrentPlayer.Wg.Done()
+
+	timer := time.NewTimer(time.Minute * 2)
+	defer timer.Stop()
+
+	for {
+		select {
+		case _, ok := <-rPeer.peerActivity:
+			if !ok || rPeer.destroyed.Load() {
+				return
+			}
+			timer.Reset(time.Minute * 2)
+			continue
+
+		case <-time.After(45 * time.Second):
+			go torrentPlayer.sendMessage(rPeer, &keepAliveMessage{})
+			continue
+
+		case <-timer.C:
+			logger.Logger.Debug("Peer timed out", zap.String("peer", string(rPeer.peerID[:])))
+			rPeer.destroyed.Store(true)
+			torrentPlayer.eventChan <- &destroyPeerEvent{rPeer}
+			return
 		}
 	}
 }

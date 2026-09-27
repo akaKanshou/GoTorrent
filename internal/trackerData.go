@@ -32,6 +32,11 @@ type peer struct {
 	// If this is an invalid or a dummy peer used to indicate a removal
 	// If destroyed is set to true, do not use peer
 	destroyed atomic.Bool
+
+	// Buffers and information about the piece being downloaded from the peer
+	pieceBuffer []byte
+	bytesRead   *bitfield.BitField
+	pieceLength int64
 }
 
 type metaData struct {

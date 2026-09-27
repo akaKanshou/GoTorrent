@@ -4,7 +4,7 @@ const (
 	tpEventNewPeer = iota
 	tpEventDestroyPeer
 	tpEventIncomingMessage
-	tpPieceResponsibilityReqEvent
+	tpPeerAvailableForDownloadEvent
 )
 
 type event interface {
@@ -30,8 +30,8 @@ type incomingMessageEvent struct {
 
 func (e *incomingMessageEvent) eventType() int { return tpEventIncomingMessage }
 
-type pieceResponsibilityReqEvent struct {
+type peerAvailableForDownloadEvent struct {
 	peer *peer
 }
 
-func (e *pieceResponsibilityReqEvent) eventType() int { return tpPieceResponsibilityReqEvent }
+func (e *peerAvailableForDownloadEvent) eventType() int { return tpPeerAvailableForDownloadEvent }

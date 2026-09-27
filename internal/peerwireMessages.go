@@ -17,6 +17,10 @@ const (
 )
 
 const (
+	maxRequestLength = 1 << 14
+)
+
+const (
 	peerwireChokeID byte = iota
 	peerwireUnchokeID
 	peerwireInterestedID
@@ -27,7 +31,8 @@ const (
 	peerwirePieceID
 	peerwireCancelID
 	peerwirePortID
-	peerwireKeepAliveID // Not defined by spec - only for the application's use
+	peerwireKeepAliveID  // Not defined by spec - only for the application's use
+	peerwireMultiMessage // Not defined by spec - only for the application's use
 )
 
 // <pstrlen><pstr><reserved><info_hash><peer_id>
@@ -497,3 +502,39 @@ func peerIDGenerate() peerID {
 
 	return peerID
 }
+
+type multiMessage struct {
+	messages []peerwireMessage
+}
+
+func (m *multiMessage) messageType() byte {
+	return peerwireMultiMessage
+}
+
+func (m *multiMessage) marshalMessage() []byte {
+	payload := make([]byte, 0)
+	for _, message := range m.messages {
+		payload = append(payload, message.marshalMessage()...)
+	}
+	return payload
+}
+
+func (m *multiMessage) unmarshalMessage(payload []byte) error {
+	return undefinedUnmarshalError
+}
+
+func newPipedRequestsMessage(index, pieceLength int64) *multiMessage {
+	messages := make([]peerwireMessage, 0)
+	for offset := 0; offset < int(pieceLength); offset += maxRequestLength {
+		messages = append(messages, &requestMessage{
+			index:  int(index),
+			begin:  offset,
+			length: min(maxRequestLength, int(pieceLength)-offset),
+		})
+	}
+	return &multiMessage{messages: messages}
+}
+
+var (
+	undefinedUnmarshalError = errors.New("undefined unmarshal type")
+)
