@@ -4,7 +4,9 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"io"
 	"net"
+	"sync/atomic"
 	"time"
 
 	"gitlab.com/akaKanshou/gotorrent/logger"
@@ -77,7 +79,7 @@ func (torrentPlayer *TorrentPlayer) initiateHandshake(peerAddr string) {
 	}
 	logger.Logger.Info("handshake successful", zap.String("peer", peerAddr))
 
-	torrentPlayer.peerChan <- &peer{
+	torrentPlayer.acceptPeers(&peer{
 		conn:    peerConn,
 		peerID:  res.peerID,
 		options: res.options,
@@ -89,10 +91,10 @@ func (torrentPlayer *TorrentPlayer) initiateHandshake(peerAddr string) {
 
 		piecesAvailable: bitfield.BigEndian.New(uint64(len(torrentPlayer.torrent.localData.infoDict.pieces))),
 
-		lastMessage: time.Now(),
+		peerActivity: make(chan any),
 
-		destroyed: false,
-	}
+		destroyed: atomic.Bool{},
+	})
 }
 
 func (torrentPlayer *TorrentPlayer) listenToPeer(peer *peer) {
@@ -188,12 +190,15 @@ func (torrentPlayer *TorrentPlayer) handleMessage(rPeer *peer, message peerwireM
 	}
 
 	if err != nil {
-		rPeer.destroyed = true
-		torrentPlayer.peerChan <- rPeer
+		rPeer.destroyed.Store(true)
+		torrentPlayer.eventChan <- &destroyPeerEvent{rPeer}
+		return err
 	}
 
 	// Update the lastCommunicated of the peer
-	rPeer.lastMessage = time.Now()
+	if !rPeer.destroyed.Load() {
+		rPeer.peerActivity <- nil
+	}
 	return nil
 }
 

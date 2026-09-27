@@ -2,6 +2,7 @@ package internal
 
 import (
 	"net"
+	"sync/atomic"
 	"time"
 
 	"go.loafoe.dev/bitfield/v2"
@@ -26,11 +27,11 @@ type peer struct {
 	piecesAvailable *bitfield.BitField
 
 	// Last time peer sent or received a message. If time since lastMessage > 2 minutes, drop peer
-	lastMessage time.Time
+	peerActivity chan any
 
 	// If this is an invalid or a dummy peer used to indicate a removal
 	// If destroyed is set to true, do not use peer
-	destroyed bool
+	destroyed atomic.Bool
 }
 
 type metaData struct {

@@ -33,10 +33,10 @@ type TorrentPlayer struct {
 	listeningPort uint16
 	listener      *net.TCPListener
 
-	peers    []*peer    // List of currently connected and active peers
-	peerChan chan *peer // Channel managing to addition and removal of peers.
+	peers []*peer // List of currently connected and active peers
 
-	Wg sync.WaitGroup
+	Wg        sync.WaitGroup
+	eventChan chan event
 
 	fileManager fileManager
 }
@@ -44,9 +44,9 @@ type TorrentPlayer struct {
 // NewTorrentPlayer returns a new uninitialized torrent player
 func NewTorrentPlayer() *TorrentPlayer {
 	return &TorrentPlayer{
-		peerChan: make(chan *peer, 50),
-		state:    playerUninitialized,
-		Wg:       sync.WaitGroup{},
+		state:     playerUninitialized,
+		Wg:        sync.WaitGroup{},
+		eventChan: make(chan event, 256),
 	}
 }
 
@@ -110,10 +110,6 @@ func (torrentPlayer *TorrentPlayer) startTorrent() error {
 	}
 	logger.Logger.Info("Acquired peer addresses", zap.Strings("peers", peerAdds))
 
-	// Accept the peers that have passed handshakes initiated by us or have requested connected to us
-	go torrentPlayer.acceptPeers()
-	torrentPlayer.Wg.Add(1)
-
 	for _, peerAddr := range peerAdds {
 		go torrentPlayer.initiateHandshake(peerAddr)
 		torrentPlayer.Wg.Add(1)
@@ -142,6 +138,10 @@ func (torrentPlayer *TorrentPlayer) getPeersFromTrackers(numwant int) ([]string,
 			switch iTracker.getProtocol() {
 			case pUDP:
 				udpTracker := iTracker.(*trackerUDP)
+				if time.Since(udpTracker.lastAnnounce) < udpTracker.trackerData.interval {
+					logger.Logger.Info("Skipping UDP Announce; Announce too frequent", zap.String("tracker", udpTracker.trackerData.metaData.announceUrl))
+					break
+				}
 
 				tPeerAdds, err = udpTracker.announce(
 					torrentPlayer.torrent.localData.infoHash,
@@ -179,42 +179,69 @@ func (torrentPlayer *TorrentPlayer) getPeersFromTrackers(numwant int) ([]string,
 // This includes both peers with whom a handshake was initiated by client (which the client got from the trackers)
 // and the ones who initiated handshakes (peers that got the client address from their own announces to the trackers)
 // 2. Any peer that is to be destroyed is also sent through torrentPlayer.peerChan with the destroyed field set to true.
-func (torrentPlayer *TorrentPlayer) acceptPeers() {
-	defer torrentPlayer.Wg.Done()
+func (torrentPlayer *TorrentPlayer) acceptPeers(nPeer *peer) {
+	torrentPlayer.peers = append(torrentPlayer.peers, nPeer)
+	logger.Logger.Debug("Accepted peer", zap.String("peer", string(nPeer.peerID[:])),
+		zap.String("peerIPAddr", nPeer.conn.LocalAddr().String()))
 
-	// Unsafe check for running state
-	// TODO: Implement better looping structure
-	for torrentPlayer.state == playerStarted {
-		select {
-		case nPeer := <-torrentPlayer.peerChan:
-			logger.Logger.Debug("peer received", zap.String("peer", string(nPeer.peerID[:])))
-			if nPeer.destroyed {
-				index := slices.IndexFunc(torrentPlayer.peers, func(rPeer *peer) bool {
-					return slices.Compare(nPeer.peerID[:], rPeer.peerID[:]) == 0
-				})
-				if index == -1 {
-					logger.Logger.Warn("Tried to destroy non-existent peer", zap.String("peer", string(nPeer.peerID[:])))
-				} else {
-					// Have not used slices.Delete in favor of this homemade deletion for efficient deletion
-					lenPeers := len(torrentPlayer.peers)
-					torrentPlayer.peers[index].conn.Close()
-					torrentPlayer.peers[index] = torrentPlayer.peers[lenPeers-1]
-					torrentPlayer.peers = torrentPlayer.peers[:lenPeers-1]
-				}
-				continue
-			}
+	go torrentPlayer.listenToPeer(nPeer)
+	torrentPlayer.Wg.Add(1)
+}
 
-			torrentPlayer.peers = append(torrentPlayer.peers, nPeer)
-			go torrentPlayer.listenToPeer(nPeer)
-			torrentPlayer.Wg.Add(1)
-			logger.Logger.Debug("Accepted peer", zap.String("peer", string(nPeer.peerID[:])),
-				zap.String("peerIPAddr", nPeer.conn.LocalAddr().String()))
-
-		case <-time.After(time.Minute):
-		}
+func (torrentPlayer *TorrentPlayer) destroyPeer(nPeer *peer) {
+	nPeer.destroyed.Store(true)
+	index := slices.IndexFunc(torrentPlayer.peers, func(rPeer *peer) bool {
+		return slices.Compare(nPeer.peerID[:], rPeer.peerID[:]) == 0
+	})
+	if index == -1 {
+		logger.Logger.Warn("Tried to destroy non-existent peer", zap.String("peer", string(nPeer.peerID[:])))
+	} else {
+		// Have not used slices.Delete in favor of this homemade deletion for efficient deletion
+		lenPeers := len(torrentPlayer.peers)
+		torrentPlayer.peers[index].conn.Close()
+		torrentPlayer.peers[index] = torrentPlayer.peers[lenPeers-1]
+		torrentPlayer.peers = torrentPlayer.peers[:lenPeers-1]
 	}
 }
 
 var (
 	trackersUnresponsiveError = errors.New("no tracker responsive")
 )
+
+func (torrentPlayer *TorrentPlayer) eventLoop() {
+	defer torrentPlayer.Wg.Done()
+
+	var err error
+	for {
+		event, ok := <-torrentPlayer.eventChan
+		if !ok {
+			return
+		}
+
+		switch event.eventType() {
+		case tpEventNewPeer:
+			newPeerEvent := event.(*newPeerEvent)
+			torrentPlayer.acceptPeers(newPeerEvent.newPeer)
+			continue
+
+		case tpEventDestroyPeer:
+			destroyPeerEvent := event.(*destroyPeerEvent)
+			torrentPlayer.destroyPeer(destroyPeerEvent.peer)
+			continue
+
+		case tpEventIncomingMessage:
+			incomingMessageEvent := event.(*incomingMessageEvent)
+			err = torrentPlayer.handleMessage(incomingMessageEvent.peer, incomingMessageEvent.message)
+			if err != nil {
+				logger.Logger.Error("Failed to handle incoming message", zap.Error(err))
+			}
+			// TODO: Add check if error was peer-side or client-side
+			torrentPlayer.destroyPeer(incomingMessageEvent.peer)
+			continue
+
+		case tpPieceResponsibilityReqEvent:
+			_ = event.(*pieceResponsibilityReqEvent)
+			// TODO: Implement
+		}
+	}
+}
