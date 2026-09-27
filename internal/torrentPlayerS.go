@@ -96,6 +96,7 @@ func (torrentPlayer *TorrentPlayer) addTorrent(torrent *Torrent) error {
 		destination: torrent.destPath,
 		piecesDone:  bitfield.BigEndian.New(uint64(len(torrent.localData.infoDict.pieces))),
 		pieceLength: int64(torrent.localData.infoDict.pieceLength),
+		pieces:      torrent.localData.infoDict.pieces,
 	}
 	err = torrentPlayer.fileManager.initFiles(torrent.localData.infoDict)
 	return nil
@@ -254,9 +255,31 @@ func (torrentPlayer *TorrentPlayer) eventLoop() {
 			} else {
 				pieceLen := torrentPlayer.fileManager.getPieceLength(index)
 				torrentPlayer.fileManager.piecesInProgress[index] = peerAvailableForDownloadEvent.peer
-				peerAvailableForDownloadEvent.peer.initBuffers(pieceLen)
+				peerAvailableForDownloadEvent.peer.initBuffers(index, pieceLen)
 				torrentPlayer.sendMessage(peerAvailableForDownloadEvent.peer, newPipedRequestsMessage(index, pieceLen))
 			}
+			continue
+
+		case tpVerifyPieceEvent:
+			verifyPieceEvent := event.(*verifyPieceEvent)
+			delete(torrentPlayer.fileManager.piecesInProgress, verifyPieceEvent.index)
+			// TODO: Edit torrent download size
+
+			shaVerified := torrentPlayer.fileManager.verifyPiece(verifyPieceEvent.peer.pieceBuffer[:verifyPieceEvent.peer.pieceLength], verifyPieceEvent.peer.pieceDownloading)
+			if !shaVerified {
+				logger.Logger.Error("Piece SHA hash does not match")
+				verifyPieceEvent.peer.piecesAvailable.ClearBit(uint64(verifyPieceEvent.peer.pieceDownloading))
+				torrentPlayer.eventChan <- &peerAvailableForDownloadEvent{peer: verifyPieceEvent.peer}
+				continue
+			}
+			err := torrentPlayer.fileManager.writePiece(verifyPieceEvent.peer.pieceDownloading, verifyPieceEvent.peer.pieceLength, verifyPieceEvent.peer.pieceBuffer)
+			if err != nil {
+				logger.Logger.Error("Failed to write piece", zap.Error(err))
+			} else if torrentPlayer.fileManager.piecesDownloaded == len(torrentPlayer.fileManager.pieces) {
+				logger.Logger.Info("Torrent Completed!!!")
+				return
+			}
+			torrentPlayer.eventChan <- &peerAvailableForDownloadEvent{peer: verifyPieceEvent.peer}
 			continue
 		}
 	}

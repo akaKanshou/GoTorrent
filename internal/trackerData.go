@@ -34,9 +34,11 @@ type peer struct {
 	destroyed atomic.Bool
 
 	// Buffers and information about the piece being downloaded from the peer
-	pieceBuffer []byte
-	bytesRead   *bitfield.BitField
-	pieceLength int64
+	pieceDownloading int64
+	pieceBuffer      []byte
+	bytesRead        *bitfield.BitField
+	pieceLength      int64
+	bytesDownloaded  int64
 }
 
 type metaData struct {

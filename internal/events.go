@@ -5,6 +5,7 @@ const (
 	tpEventDestroyPeer
 	tpEventIncomingMessage
 	tpPeerAvailableForDownloadEvent
+	tpVerifyPieceEvent
 )
 
 type event interface {
@@ -35,3 +36,10 @@ type peerAvailableForDownloadEvent struct {
 }
 
 func (e *peerAvailableForDownloadEvent) eventType() int { return tpPeerAvailableForDownloadEvent }
+
+type verifyPieceEvent struct {
+	peer  *peer
+	index int64
+}
+
+func (e *verifyPieceEvent) eventType() int { return tpVerifyPieceEvent }

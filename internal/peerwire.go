@@ -203,8 +203,21 @@ func (torrentPlayer *TorrentPlayer) handleMessage(rPeer *peer, message peerwireM
 			fmt.Sprintf("%x", rPeer.piecesAvailable.Bytes())))
 		break
 
-	case peerwireRequestID:
 	case peerwirePieceID:
+		pwPieceMessage := message.(*pieceMessage)
+		pieceDone, err := rPeer.writeBlock(pwPieceMessage)
+		if err != nil {
+			return err
+		}
+		if pieceDone {
+			torrentPlayer.eventChan <- &verifyPieceEvent{
+				peer:  rPeer,
+				index: rPeer.pieceDownloading,
+			}
+		}
+		break
+
+	case peerwireRequestID:
 	case peerwireCancelID:
 	case peerwirePortID:
 		logger.Logger.Debug("Unimplemented message", zap.String("peer", string(rPeer.peerID[:])),
@@ -213,6 +226,8 @@ func (torrentPlayer *TorrentPlayer) handleMessage(rPeer *peer, message peerwireM
 	case peerwireKeepAliveID:
 		logger.Logger.Debug("Keep-alive message", zap.String("peer", string(rPeer.peerID[:])))
 		break
+	default:
+		return invalidMessageIDError
 	}
 
 	// Update the lastCommunicated of the peer
@@ -298,7 +313,31 @@ var (
 	peerIsDestroyedErr = errors.New("peer is destroyed")
 )
 
-func (p *peer) initBuffers(pieceLength int64) {
+func (p *peer) initBuffers(index, pieceLength int64) {
 	p.pieceLength = pieceLength
 	p.bytesRead = bitfield.BigEndian.New(uint64(pieceLength))
+	p.pieceDownloading = index
+	p.bytesDownloaded = 0
 }
+
+func (p *peer) writeBlock(message *pieceMessage) (bool, error) {
+	if message.index != int(p.pieceDownloading) {
+		return false, didNotAskForPieceError
+	}
+	for i := 0; i < len(message.block); i++ {
+		haveByte, err := p.bytesRead.TestBit(uint64(i + message.begin))
+		if err != nil {
+			return false, err
+		} else if !haveByte {
+			p.bytesDownloaded++
+		}
+		p.bytesRead.SetBit(uint64(i + message.begin))
+	}
+	copy(p.pieceBuffer[message.begin:], message.block[:])
+	return p.bytesDownloaded == p.pieceLength, nil
+}
+
+var (
+	didNotAskForPieceError = errors.New("piece was not requested to peer")
+	blockOutOfRangeError   = errors.New("block out of range of piece")
+)

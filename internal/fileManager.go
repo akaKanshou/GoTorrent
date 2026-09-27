@@ -1,6 +1,8 @@
 package internal
 
 import (
+	"bytes"
+	"crypto/sha1"
 	"errors"
 	"io"
 	"os"
@@ -21,6 +23,7 @@ type fileManager struct {
 	piecesInProgress map[int64]*peer
 	pieceBuffers     map[int64][]byte
 	mutex            sync.Mutex
+	piecesDownloaded int
 }
 
 type fileInfo struct {
@@ -38,6 +41,7 @@ func (f *fileManager) initFiles(files infoDict) error {
 
 	f.files = make([]fileInfo, len(files.fileSpecs))
 	f.totalLength = 0
+	f.piecesDownloaded = 0
 
 	var curOffset int64 = 0
 	for i, fileSpec := range files.fileSpecs {
@@ -76,6 +80,7 @@ func (f *fileManager) writePiece(piece, length int64, buf []byte) error {
 	if piece < 0 || length < 0 {
 		return invalidPieceOffsetOrLengthError
 	}
+	buf = buf[:length]
 
 	firstFile := f.getFirstFileForPiece(piece)
 	if firstFile == -1 {
@@ -101,6 +106,8 @@ func (f *fileManager) writePiece(piece, length int64, buf []byte) error {
 		}
 	}
 
+	f.piecesDone.SetBit(uint64(piece))
+	f.piecesDownloaded++
 	return nil
 }
 
@@ -159,8 +166,14 @@ func (f *fileManager) getPieceLength(index int64) int64 {
 	return f.totalLength - f.pieceLength*index
 }
 
+func (f *fileManager) verifyPiece(buffer []byte, index int64) bool {
+	shaHash := sha1.Sum(buffer)
+	return bytes.Compare(shaHash[:], f.pieces[index][:]) == 0
+}
+
 var (
 	invalidPieceOffsetOrLengthError = errors.New("invalid piece, offset or length")
 	pieceOutOfRangeError            = errors.New("pieceOutOfRangeError")
 	pieceNotAllocated               = errors.New("pieceNotAllocated")
+	shaHashFailed                   = errors.New("SHA1 hash of piece does not match")
 )
