@@ -183,7 +183,13 @@ func (torrentPlayer *TorrentPlayer) handleMessage(rPeer *peer, message peerwireM
 			zap.String("peerID", string(rPeer.peerID[:])))
 		break
 	case peerwireUnchokeID:
-		rPeer.peerChoking = false
+		// peer was choking, client was interested, now peer unchoked so is available to download from
+		if rPeer.peerChoking {
+			rPeer.peerChoking = false
+			if rPeer.amInterested {
+				torrentPlayer.eventChan <- &peerAvailableForDownloadEvent{peer: rPeer}
+			}
+		}
 		logger.Logger.Debug("peer unchoked client", zap.String("peer", rPeer.conn.RemoteAddr().String()),
 			zap.String("peerID", string(rPeer.peerID[:])))
 		break
@@ -207,8 +213,12 @@ func (torrentPlayer *TorrentPlayer) handleMessage(rPeer *peer, message peerwireM
 		_, ok := torrentPlayer.fileManager.piecesInProgress[int64(pwHaveMessage.pieceIndex)]
 		havePiece, _ := torrentPlayer.fileManager.piecesDone.TestBit(uint64(pwHaveMessage.pieceIndex))
 		if !ok && !havePiece && !rPeer.amInterested {
-			go torrentPlayer.sendMessage(rPeer, &interestedMessage{})
 			rPeer.amInterested = true
+			if rPeer.peerChoking {
+				rPeer.sendMessageChan <- &interestedMessage{}
+			} else {
+				torrentPlayer.eventChan <- &peerAvailableForDownloadEvent{peer: rPeer}
+			}
 		}
 		break
 
@@ -219,8 +229,12 @@ func (torrentPlayer *TorrentPlayer) handleMessage(rPeer *peer, message peerwireM
 			return err
 		}
 		if !rPeer.amInterested && torrentPlayer.testInterested(rPeer) {
-			go torrentPlayer.sendMessage(rPeer, &interestedMessage{})
 			rPeer.amInterested = true
+			if rPeer.peerChoking {
+				rPeer.sendMessageChan <- &interestedMessage{}
+			} else {
+				torrentPlayer.eventChan <- &peerAvailableForDownloadEvent{peer: rPeer}
+			}
 		}
 		logger.Logger.Debug("Setting bitfield", zap.String("peer", string(rPeer.peerID[:])), zap.String("bitfield",
 			fmt.Sprintf("%x", rPeer.piecesAvailable.Bytes())))
@@ -324,6 +338,7 @@ func (torrentPlayer *TorrentPlayer) sendMessage(rPeer *peer, message peerwireMes
 	} else if n != len(sentBytes) {
 		return io.ErrShortWrite
 	}
+	logger.Logger.Debug("Message sent", zap.String("peer", string(rPeer.peerID[:])), zap.String("bytes", fmt.Sprintf("%x", sentBytes)))
 
 	if rPeer.destroyed.Load() {
 		return peerIsDestroyedErr
