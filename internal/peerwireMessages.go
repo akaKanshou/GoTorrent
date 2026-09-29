@@ -119,7 +119,7 @@ func (m *keepAliveMessage) messageType() byte {
 }
 
 func (m *keepAliveMessage) marshalMessage() []byte {
-	return make([]byte, 0)
+	return make([]byte, 4)
 }
 
 func (m *keepAliveMessage) unmarshalMessage(payload []byte) error {
