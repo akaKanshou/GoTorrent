@@ -80,26 +80,49 @@ func (torrentPlayer *TorrentPlayer) initiateHandshake(peerAddr string) {
 	logger.Logger.Info("handshake successful", zap.String("peer", peerAddr))
 
 	torrentPlayer.eventChan <- &newPeerEvent{
-		newPeer: &peer{
-			conn:    peerConn,
-			peerID:  res.peerID,
-			options: res.options,
+		newPeer: newPeer(peerConn, res.peerID, res.options,
+			int(torrentPlayer.torrent.localData.infoDict.pieceLength), len(torrentPlayer.torrent.localData.infoDict.pieces)),
+	}
+}
 
-			amChoking:      true,
-			amInterested:   false,
-			peerChoking:    true,
-			peerInterested: false,
+func newPeer(conn net.Conn, peerID peerID, options uint64, pieceLength, numPieces int) *peer {
+	peer := &peer{
+		conn:    conn,
+		peerID:  peerID,
+		options: options,
 
-			piecesAvailable: bitfield.BigEndian.New(uint64(len(torrentPlayer.torrent.localData.infoDict.pieces))),
+		amChoking:      true,
+		amInterested:   false,
+		peerChoking:    true,
+		peerInterested: false,
 
-			peerActivity: make(chan any, 1),
+		piecesAvailable: bitfield.BigEndian.New(uint64(numPieces)),
 
-			destroyed: atomic.Bool{},
+		peerActivity:    make(chan any, 1),
+		sendMessageChan: make(chan peerwireMessage, 64),
 
-			pieceBuffer: make([]byte, torrentPlayer.torrent.localData.infoDict.pieceLength),
-			bytesRead:   bitfield.BigEndian.New(torrentPlayer.torrent.localData.infoDict.pieceLength),
-			pieceLength: int64(torrentPlayer.torrent.localData.infoDict.pieceLength),
-		}}
+		destroyed: atomic.Bool{},
+
+		pieceBuffer:      make([]byte, pieceLength),
+		bytesRead:        bitfield.BigEndian.New(uint64(pieceLength)),
+		pieceLength:      int64(pieceLength),
+		pieceDownloading: -1,
+	}
+	return peer
+}
+
+func (torrentPlayer *TorrentPlayer) writeToPeer(peer *peer) {
+	defer torrentPlayer.Wg.Done()
+
+	// TODO: Track number of pending messages per peer, and drop messages if it would block
+	for message := range peer.sendMessageChan {
+		err := torrentPlayer.sendMessage(peer, message)
+		if err != nil {
+			peer.destroyed.Store(true)
+			torrentPlayer.eventChan <- &destroyPeerEvent{peer: peer}
+			return
+		}
+	}
 }
 
 func (torrentPlayer *TorrentPlayer) listenToPeer(peer *peer) {

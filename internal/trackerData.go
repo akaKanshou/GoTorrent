@@ -27,7 +27,8 @@ type peer struct {
 	piecesAvailable *bitfield.BitField
 
 	// Last time peer sent or received a message. If time since lastMessage > 2 minutes, drop peer
-	peerActivity chan any
+	peerActivity    chan any
+	sendMessageChan chan peerwireMessage
 
 	// If this is an invalid or a dummy peer used to indicate a removal
 	// If destroyed is set to true, do not use peer
