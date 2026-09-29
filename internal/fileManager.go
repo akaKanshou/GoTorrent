@@ -33,6 +33,18 @@ type fileInfo struct {
 	length      int64
 }
 
+func newFileManager(destination string, pieceLength int64, pieces []hashBytes) *fileManager {
+	fileManager := &fileManager{
+		destination:      filepath.Clean(destination),
+		pieceLength:      pieceLength,
+		pieces:           pieces,
+		piecesDone:       bitfield.BigEndian.New(uint64(len(pieces))),
+		piecesInProgress: make(map[int64]*peer),
+		pieceBuffers:     make(map[int64][]byte),
+	}
+	return fileManager
+}
+
 // initFiles initializes the files of fileManager, as well as allocating space for them.
 func (f *fileManager) initFiles(files infoDict) error {
 	if files.multipleFiles {
@@ -143,7 +155,7 @@ func (f *fileManager) getFirstFileForPiece(piece int64) int {
 func (f *fileManager) getPieceToDownload(available *bitfield.BitField) int64 {
 	for index := uint64(0); index < available.Size(); index++ {
 		iHavePiece, _ := f.piecesDone.TestBit(index)
-		uHavePiece, _ := f.piecesDone.TestBit(index)
+		uHavePiece, _ := available.TestBit(index)
 		if iHavePiece || !uHavePiece {
 			continue
 		}

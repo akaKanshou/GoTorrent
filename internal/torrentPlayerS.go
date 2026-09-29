@@ -38,7 +38,7 @@ type TorrentPlayer struct {
 	Wg        sync.WaitGroup
 	eventChan chan event
 
-	fileManager fileManager
+	fileManager *fileManager
 }
 
 // NewTorrentPlayer returns a new uninitialized torrent player
@@ -92,12 +92,7 @@ func (torrentPlayer *TorrentPlayer) addTorrent(torrent *Torrent) error {
 	logger.Logger.Info("Initialized TCP Listener", zap.Uint16("port", torrentPlayer.listeningPort),
 		zap.String("peerID", string(torrentPlayer.peerID[:])))
 
-	torrentPlayer.fileManager = fileManager{
-		destination: torrent.destPath,
-		piecesDone:  bitfield.BigEndian.New(uint64(len(torrent.localData.infoDict.pieces))),
-		pieceLength: int64(torrent.localData.infoDict.pieceLength),
-		pieces:      torrent.localData.infoDict.pieces,
-	}
+	torrentPlayer.fileManager = newFileManager(torrent.destPath, int64(torrent.localData.infoDict.pieceLength), torrent.localData.infoDict.pieces)
 	err = torrentPlayer.fileManager.initFiles(torrent.localData.infoDict)
 	return nil
 }
