@@ -180,7 +180,7 @@ func (torrentPlayer *TorrentPlayer) getPeersFromTrackers(numwant int) ([]string,
 func (torrentPlayer *TorrentPlayer) acceptPeers(nPeer *peer) {
 	torrentPlayer.peers = append(torrentPlayer.peers, nPeer)
 	logger.Logger.Debug("Accepted peer", zap.String("peer", string(nPeer.peerID[:])),
-		zap.String("peerIPAddr", nPeer.conn.LocalAddr().String()))
+		zap.String("peerIPAddr", nPeer.conn.RemoteAddr().String()))
 
 	go torrentPlayer.listenToPeer(nPeer)
 	go torrentPlayer.keepAlive(nPeer)
@@ -240,6 +240,11 @@ func (torrentPlayer *TorrentPlayer) eventLoop() {
 			}
 			continue
 
+		case tpEventOutgoingMessage:
+			outgoingMessageEvent := event.(*outgoingMessageEvent)
+			torrentPlayer.handleOutgoingMessage(outgoingMessageEvent.peer, outgoingMessageEvent.message)
+			continue
+
 		case tpPeerAvailableForDownloadEvent:
 			peerAvailableForDownloadEvent := event.(*peerAvailableForDownloadEvent)
 			if peerAvailableForDownloadEvent.peer.peerChoking || !peerAvailableForDownloadEvent.peer.amInterested {
@@ -251,40 +256,39 @@ func (torrentPlayer *TorrentPlayer) eventLoop() {
 			index := torrentPlayer.fileManager.getPieceToDownload(peerAvailableForDownloadEvent.peer.piecesAvailable)
 			if index == -1 {
 				logger.Logger.Debug("Peer does not have any relevant pieces", zap.String("peer", string(peerAvailableForDownloadEvent.peer.peerID[:])))
-				peerAvailableForDownloadEvent.peer.amInterested = false
-				peerAvailableForDownloadEvent.peer.sendMessageChan <- &interestedMessage{}
+				torrentPlayer.eventChan <- &outgoingMessageEvent{peer: peerAvailableForDownloadEvent.peer, message: &notInterestedMessage{}}
 			} else {
 				logger.Logger.Debug("Peer assigned piece", zap.String("peer", string(peerAvailableForDownloadEvent.peer.peerID[:])), zap.Int64("piece", index))
 				pieceLen := torrentPlayer.fileManager.getPieceLength(index)
 				torrentPlayer.fileManager.piecesInProgress[index] = peerAvailableForDownloadEvent.peer
 				peerAvailableForDownloadEvent.peer.initBuffers(index, pieceLen)
-				peerAvailableForDownloadEvent.peer.sendMessageChan <- newPipedRequestsMessage(index, pieceLen)
+				torrentPlayer.eventChan <- &outgoingMessageEvent{peer: peerAvailableForDownloadEvent.peer, message: newPipedRequestsMessage(index, pieceLen)}
 			}
 			continue
 
 		case tpVerifyPieceEvent:
 			verifyPieceEvent := event.(*verifyPieceEvent)
 			delete(torrentPlayer.fileManager.piecesInProgress, verifyPieceEvent.index)
+			verifyPieceEvent.peer.pieceDownloading = -1
 			// TODO: Edit torrent download size
 
-			shaVerified := torrentPlayer.fileManager.verifyPiece(verifyPieceEvent.peer.pieceBuffer[:verifyPieceEvent.peer.pieceLength], verifyPieceEvent.peer.pieceDownloading)
+			shaVerified := torrentPlayer.fileManager.verifyPiece(verifyPieceEvent.peer.pieceBuffer[:verifyPieceEvent.peer.pieceLength], verifyPieceEvent.index)
 			if !shaVerified {
 				logger.Logger.Error("Piece SHA hash does not match")
-				verifyPieceEvent.peer.piecesAvailable.ClearBit(uint64(verifyPieceEvent.peer.pieceDownloading))
+				verifyPieceEvent.peer.piecesAvailable.ClearBit(uint64(verifyPieceEvent.index))
 				torrentPlayer.eventChan <- &peerAvailableForDownloadEvent{peer: verifyPieceEvent.peer}
-				verifyPieceEvent.peer.pieceDownloading = -1
 				continue
 			}
-			logger.Logger.Debug("Piece verified", zap.String("peer", string(verifyPieceEvent.peer.peerID[:])), zap.Int64("piece", verifyPieceEvent.peer.pieceDownloading))
-			err := torrentPlayer.fileManager.writePiece(verifyPieceEvent.peer.pieceDownloading, verifyPieceEvent.peer.pieceLength, verifyPieceEvent.peer.pieceBuffer)
-			verifyPieceEvent.peer.pieceDownloading = -1
+			logger.Logger.Debug("Piece verified", zap.String("peer", string(verifyPieceEvent.peer.peerID[:])), zap.Int64("piece", verifyPieceEvent.index))
+			err := torrentPlayer.fileManager.writePiece(verifyPieceEvent.index, verifyPieceEvent.peer.pieceLength, verifyPieceEvent.peer.pieceBuffer)
+
 			if err != nil {
 				logger.Logger.Error("Failed to write piece", zap.Error(err))
 			} else if torrentPlayer.fileManager.piecesDownloaded == len(torrentPlayer.fileManager.pieces) {
 				logger.Logger.Info("Torrent Completed!!!")
 				return
 			}
-			logger.Logger.Debug("Piece written to file", zap.Int64("piece", verifyPieceEvent.peer.pieceDownloading))
+			logger.Logger.Debug("Piece written to file", zap.Int64("piece", verifyPieceEvent.index))
 			torrentPlayer.eventChan <- &peerAvailableForDownloadEvent{peer: verifyPieceEvent.peer}
 			continue
 		}
@@ -310,7 +314,7 @@ func (torrentPlayer *TorrentPlayer) keepAlive(rPeer *peer) {
 			continue
 
 		case <-time.After(90 * time.Second):
-			rPeer.sendMessageChan <- &keepAliveMessage{}
+			torrentPlayer.eventChan <- &outgoingMessageEvent{peer: rPeer, message: &keepAliveMessage{}}
 			continue
 
 		case <-timer.C:

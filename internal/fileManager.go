@@ -9,7 +9,9 @@ import (
 	"path/filepath"
 	"sync"
 
+	"gitlab.com/akaKanshou/gotorrent/logger"
 	"go.loafoe.dev/bitfield/v2"
+	"go.uber.org/zap"
 )
 
 type fileManager struct {
@@ -59,7 +61,7 @@ func (f *fileManager) initFiles(files infoDict) error {
 	for i, fileSpec := range files.fileSpecs {
 		f.files[i].filePath = filepath.Join(f.destination, filepath.Join(fileSpec.path...))
 		f.files[i].pieceBegin = curOffset / int64(files.pieceLength)
-		f.files[i].offsetBegin = curOffset - int64(files.pieceLength)*f.files[i].pieceBegin
+		f.files[i].offsetBegin = curOffset % int64(files.pieceLength)
 		f.files[i].length = fileSpec.length
 
 		f.totalLength += fileSpec.length
@@ -104,8 +106,11 @@ func (f *fileManager) writePiece(piece, length int64, buf []byte) error {
 	for _, file := range f.files[firstFile:] {
 		fileByteOffsetGlobal := file.pieceBegin*f.pieceLength + file.offsetBegin
 		fileByteOffset := max(byteOffset-fileByteOffsetGlobal, 0)
-		bytesWritten := max(file.length-fileByteOffset, length)
+		bytesWritten := min(file.length-fileByteOffset, length)
 
+		logger.Logger.Debug("Writing to file", zap.String("file", file.filePath), zap.Int64("file begin index", file.pieceBegin),
+			zap.Int64("file begin offset", file.offsetBegin), zap.Int64("file length", file.length), zap.Int64("write offset", fileByteOffset),
+			zap.Int64("write length", bytesWritten))
 		err := f.writeToFile(&file, fileByteOffset, bytesWritten, buf)
 		if err != nil {
 			return err

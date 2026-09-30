@@ -5,6 +5,8 @@ import (
 	"encoding/binary"
 	"errors"
 	"math/rand"
+
+	"gitlab.com/akaKanshou/gotorrent/logger"
 )
 
 const (
@@ -321,9 +323,6 @@ func (p *pieceMessage) marshalMessage() []byte {
 }
 
 func (p *pieceMessage) unmarshalMessage(payload []byte) error {
-	if len(payload) != 8+len(p.block) {
-		return invalidMessageLengthError
-	}
 	p.index = int(binary.BigEndian.Uint32(payload))
 	p.begin = int(binary.BigEndian.Uint32(payload[4:]))
 	p.block = payload[8:]
@@ -454,6 +453,7 @@ func parseMessage(message []byte) (peerwireMessage, error) {
 		break
 	case peerwirePieceID:
 		pwMessage = &pieceMessage{}
+		logger.Logger.Debug("piece received")
 		break
 	case peerwireCancelID:
 		pwMessage = &cancelMessage{}
@@ -514,7 +514,9 @@ func (m *multiMessage) messageType() byte {
 func (m *multiMessage) marshalMessage() []byte {
 	payload := make([]byte, 0)
 	for _, message := range m.messages {
-		payload = append(payload, message.marshalMessage()...)
+		if message != nil {
+			payload = append(payload, message.marshalMessage()...)
+		}
 	}
 	return payload
 }
