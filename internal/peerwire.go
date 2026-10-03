@@ -4,10 +4,12 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"io"
 	"net"
+	"sync/atomic"
 	"time"
 
-	"gitlab.com/LUwUcifer/gotorrent/logger"
+	"gitlab.com/akaKanshou/gotorrent/logger"
 	"go.loafoe.dev/bitfield/v2"
 	"go.uber.org/zap"
 )
@@ -77,21 +79,53 @@ func (torrentPlayer *TorrentPlayer) initiateHandshake(peerAddr string) {
 	}
 	logger.Logger.Info("handshake successful", zap.String("peer", peerAddr))
 
-	torrentPlayer.peerChan <- &peer{
-		conn:    peerConn,
-		peerID:  res.peerID,
-		options: res.options,
+	peer := newPeer(peerConn, res.peerID, res.options,
+		int(torrentPlayer.torrent.localData.infoDict.pieceLength), len(torrentPlayer.torrent.localData.infoDict.pieces))
+	torrentPlayer.eventChan <- &newPeerEvent{
+		newPeer: peer,
+	}
+	torrentPlayer.eventChan <- &outgoingMessageEvent{peer: peer,
+		message: &bitfieldMessage{bitfieldData: torrentPlayer.fileManager.piecesDone.Bytes()},
+	}
+}
+
+func newPeer(conn net.Conn, peerID peerID, options uint64, pieceLength, numPieces int) *peer {
+	peer := &peer{
+		conn:    conn,
+		peerID:  peerID,
+		options: options,
 
 		amChoking:      true,
 		amInterested:   false,
 		peerChoking:    true,
 		peerInterested: false,
 
-		piecesAvailable: bitfield.BigEndian.New(uint64(len(torrentPlayer.torrent.localData.infoDict.pieces))),
+		piecesAvailable: bitfield.BigEndian.New(uint64(numPieces)),
 
-		lastMessage: time.Now(),
+		peerActivity:    make(chan any, 1),
+		sendMessageChan: make(chan peerwireMessage, 64),
 
-		destroyed: false,
+		destroyed: atomic.Bool{},
+
+		pieceBuffer:      make([]byte, pieceLength),
+		bytesRead:        bitfield.BigEndian.New(uint64(pieceLength)),
+		pieceLength:      int64(pieceLength),
+		pieceDownloading: -1,
+	}
+	return peer
+}
+
+func (torrentPlayer *TorrentPlayer) writeToPeer(peer *peer) {
+	defer torrentPlayer.Wg.Done()
+
+	// TODO: Track number of pending messages per peer, and drop messages if it would block
+	for message := range peer.sendMessageChan {
+		err := torrentPlayer.sendMessage(peer, message)
+		if err != nil {
+			peer.destroyed.Store(true)
+			torrentPlayer.eventChan <- &destroyPeerEvent{peer: peer}
+			return
+		}
 	}
 }
 
@@ -100,8 +134,8 @@ func (torrentPlayer *TorrentPlayer) listenToPeer(peer *peer) {
 
 	buffer := make([]byte, 4, torrentPlayer.torrent.localData.infoDict.pieceLength)
 	var err error
-	logger.Logger.Debug("listening to peer", zap.String("peer", peer.conn.RemoteAddr().String()))
-	for {
+	for !peer.destroyed.Load() {
+		logger.Logger.Debug("listening to peer", zap.String("peer", peer.conn.RemoteAddr().String()))
 		err = readNBytes(buffer[:], peer.conn, 4)
 		length := int(binary.BigEndian.Uint32(buffer[:4]))
 
@@ -114,20 +148,23 @@ func (torrentPlayer *TorrentPlayer) listenToPeer(peer *peer) {
 			break
 		}
 
-		message, err := parseMessage(buffer[:4+length])
+		var message peerwireMessage
+		message, err = parseMessage(buffer[:4+length])
 		if err != nil {
 			break
 		}
 
 		logger.Logger.Debug("Message received", zap.String("peer", peer.conn.RemoteAddr().String()),
-			zap.String("buffer", fmt.Sprintf("%x", buffer[:4+length])))
+			zap.String("buffer", fmt.Sprintf("%x...", buffer[:min(4+length, 20)])))
 
-		err = torrentPlayer.handleMessage(peer, message)
-		if err != nil {
-			break
+		torrentPlayer.eventChan <- &incomingMessageEvent{
+			peer:    peer,
+			message: message,
 		}
 	}
-	logger.Logger.Error("could not read from peer", zap.String("peer", peer.conn.RemoteAddr().String()), zap.Error(err))
+	if err != nil {
+		logger.Logger.Error("could not read from peer", zap.String("peer", peer.conn.RemoteAddr().String()), zap.Error(err))
+	}
 }
 
 func readNBytes(buffer []byte, conn net.Conn, length int) error {
@@ -146,12 +183,24 @@ func (torrentPlayer *TorrentPlayer) handleMessage(rPeer *peer, message peerwireM
 	var err error
 	switch message.messageType() {
 	case peerwireChokeID:
+		if rPeer.pieceDownloading != -1 {
+			delete(torrentPlayer.fileManager.pieceBuffers, rPeer.pieceDownloading)
+			delete(torrentPlayer.fileManager.piecesInProgress, rPeer.pieceDownloading)
+			rPeer.pieceDownloading = -1
+		}
 		rPeer.peerChoking = true
 		logger.Logger.Debug("peer choked client", zap.String("peer", rPeer.conn.RemoteAddr().String()),
 			zap.String("peerID", string(rPeer.peerID[:])))
 		break
 	case peerwireUnchokeID:
+		// peer was choking, client was interested, now peer unchoked so is available to download from
+
 		rPeer.peerChoking = false
+		if rPeer.amInterested && rPeer.pieceDownloading == -1 {
+			logger.Logger.Debug("Unchoked by a peer we are interested in", zap.String("peer", string(rPeer.peerID[:])))
+			torrentPlayer.eventChan <- &peerAvailableForDownloadEvent{peer: rPeer}
+		}
+
 		logger.Logger.Debug("peer unchoked client", zap.String("peer", rPeer.conn.RemoteAddr().String()),
 			zap.String("peerID", string(rPeer.peerID[:])))
 		break
@@ -165,18 +214,48 @@ func (torrentPlayer *TorrentPlayer) handleMessage(rPeer *peer, message peerwireM
 		logger.Logger.Debug("peer not interested in client", zap.String("peer", rPeer.conn.RemoteAddr().String()),
 			zap.String("peerID", string(rPeer.peerID[:])))
 		break
+
 	case peerwireHaveID:
 		pwHaveMessage := message.(*haveMessage)
 		err = rPeer.piecesAvailable.SetBit(uint64(pwHaveMessage.pieceIndex))
+		if err != nil {
+			return err
+		}
+		_, ok := torrentPlayer.fileManager.piecesInProgress[int64(pwHaveMessage.pieceIndex)]
+		havePiece, _ := torrentPlayer.fileManager.piecesDone.TestBit(uint64(pwHaveMessage.pieceIndex))
+		if !ok && !havePiece && !rPeer.amInterested {
+			torrentPlayer.eventChan <- &outgoingMessageEvent{peer: rPeer, message: &interestedMessage{}}
+		}
 		break
+
 	case peerwireBitfieldID:
 		pwBitfieldMessage := message.(*bitfieldMessage)
 		err = torrentPlayer.setBitfield(rPeer, pwBitfieldMessage.bitfieldData)
+		if err != nil {
+			return err
+		}
+		if !rPeer.amInterested && torrentPlayer.testInterested(rPeer) {
+			torrentPlayer.eventChan <- &outgoingMessageEvent{peer: rPeer, message: &interestedMessage{}}
+		}
 		logger.Logger.Debug("Setting bitfield", zap.String("peer", string(rPeer.peerID[:])), zap.String("bitfield",
 			fmt.Sprintf("%x", rPeer.piecesAvailable.Bytes())))
 		break
-	case peerwireRequestID:
+
 	case peerwirePieceID:
+		pwPieceMessage := message.(*pieceMessage)
+		pieceDone, err := rPeer.writeBlock(pwPieceMessage)
+		if err != nil {
+			return err
+		}
+		if pieceDone {
+			torrentPlayer.eventChan <- &verifyPieceEvent{
+				peer:  rPeer,
+				index: rPeer.pieceDownloading,
+			}
+		}
+		break
+
+	case peerwireRequestID:
 	case peerwireCancelID:
 	case peerwirePortID:
 		logger.Logger.Debug("Unimplemented message", zap.String("peer", string(rPeer.peerID[:])),
@@ -185,17 +264,107 @@ func (torrentPlayer *TorrentPlayer) handleMessage(rPeer *peer, message peerwireM
 	case peerwireKeepAliveID:
 		logger.Logger.Debug("Keep-alive message", zap.String("peer", string(rPeer.peerID[:])))
 		break
-	}
-
-	if err != nil {
-		rPeer.destroyed = true
-		torrentPlayer.peerChan <- rPeer
+	default:
+		return invalidMessageIDError
 	}
 
 	// Update the lastCommunicated of the peer
-	rPeer.lastMessage = time.Now()
+	if !rPeer.destroyed.Load() {
+		rPeer.peerActivity <- nil
+	}
 	return nil
 }
+
+func validateOutgoingMessage(rPeer *peer, message peerwireMessage) error {
+	switch message.messageType() {
+	case peerwireHaveID:
+	case peerwireBitfieldID:
+	case peerwireCancelID:
+	case peerwireKeepAliveID:
+		// No check
+	case peerwirePortID:
+		// Not implemented
+		break
+
+	case peerwireChokeID:
+		if rPeer.amChoking {
+			return peerIsAlreadyChoked
+		}
+		rPeer.amChoking = true
+		break
+
+	case peerwireUnchokeID:
+		if !rPeer.amChoking {
+			return peerIsAlreadyUnchoked
+		}
+		rPeer.amChoking = false
+		break
+
+	case peerwireInterestedID:
+		if rPeer.amInterested {
+			return peerKnowsInterest
+		}
+		rPeer.amInterested = true
+		break
+
+	case peerwireNotInterestedID:
+		if !rPeer.amInterested {
+			return peerKnowsDisinterest
+		}
+		rPeer.amInterested = false
+		break
+
+	case peerwirePieceID:
+		if rPeer.amChoking {
+			return peerIsChoked
+		}
+		break
+
+	case peerwireRequestID:
+		if rPeer.peerChoking {
+			return peerIsChoking
+		}
+		break
+
+	case peerwireMultiMessage:
+		multiMessage := message.(*multiMessage)
+		for i := range len(multiMessage.messages) {
+			err := validateOutgoingMessage(rPeer, multiMessage.messages[i])
+			if err != nil {
+				multiMessage.messages[i] = nil
+				logger.Logger.Debug("Dropped outgoing message", zap.String("peer", string(rPeer.peerID[:])), zap.String("message bytes", fmt.Sprintf("%x", message.marshalMessage())))
+			}
+		}
+		break
+
+	default:
+		return invalidMessageIDError
+	}
+
+	return nil
+}
+
+func (torrentPlayer *TorrentPlayer) handleOutgoingMessage(rPeer *peer, message peerwireMessage) {
+	err := validateOutgoingMessage(rPeer, message)
+	if err != nil {
+		logger.Logger.Debug("Dropped outgoing message", zap.String("peer", string(rPeer.peerID[:])), zap.String("message bytes", fmt.Sprintf("%x", message.marshalMessage())))
+		return
+	}
+
+	// Update the lastCommunicated of the peer
+	if !rPeer.destroyed.Load() {
+		rPeer.sendMessageChan <- message
+	}
+}
+
+var (
+	peerKnowsInterest     = errors.New("dropped interested message; peer knows interest")
+	peerKnowsDisinterest  = errors.New("dropped not interested message; peer knows disinterest")
+	peerIsChoked          = errors.New("peer is choked; mustn't send piece")
+	peerIsChoking         = errors.New("peer is choking; mustn't send request")
+	peerIsAlreadyChoked   = errors.New("peer is already choked; not re-choking")
+	peerIsAlreadyUnchoked = errors.New("peer is already choked; not re-unchoking")
+)
 
 func (torrentPlayer *TorrentPlayer) setBitfield(rPeer *peer, pwBitfield []byte) error {
 	bfLength, numPieces := len(pwBitfield), len(torrentPlayer.torrent.localData.infoDict.pieces)
@@ -222,9 +391,83 @@ func (torrentPlayer *TorrentPlayer) setBitfield(rPeer *peer, pwBitfield []byte) 
 	return nil
 }
 
+func (torrentPlayer *TorrentPlayer) testInterested(rPeer *peer) bool {
+	for i := range torrentPlayer.torrent.localData.infoDict.pieces {
+		iHavePiece, _ := torrentPlayer.fileManager.piecesDone.TestBit(uint64(i))
+		uHavePiece, _ := rPeer.piecesAvailable.TestBit(uint64(i))
+		if !iHavePiece && uHavePiece {
+			return true
+		}
+	}
+	return false
+}
+
 var (
 	listenerInitFailed = errors.New("failed to create tcp listener")
 
 	bitfieldLengthInvalid = errors.New("bitfield length is invalid")
 	bitfieldSpareBitsSet  = errors.New("bitfield spare bits set")
+)
+
+// sendMessage sends given message to rPeer.
+// returns an error on failure, but is supposed to be ignored most of the time.
+func (torrentPlayer *TorrentPlayer) sendMessage(rPeer *peer, message peerwireMessage) error {
+	if rPeer.destroyed.Load() {
+		logger.Logger.Warn("failed to send message; peer destroyed", zap.String("peer", string(rPeer.peerID[:])))
+		return peerIsDestroyedErr
+	}
+
+	sentBytes := message.marshalMessage()
+	logger.Logger.Debug("Sending message", zap.String("peer", string(rPeer.peerID[:])), zap.String("bytes", fmt.Sprintf("%x", sentBytes)))
+	rPeer.conn.SetWriteDeadline(time.Now().Add(90 * time.Second))
+	defer rPeer.conn.SetWriteDeadline(time.Time{})
+	n, err := rPeer.conn.Write(sentBytes)
+	if err != nil {
+		logger.Logger.Error("Failed to send message", zap.String("peer", string(rPeer.peerID[:])), zap.Error(err))
+		rPeer.destroyed.Store(true)
+		torrentPlayer.eventChan <- &destroyPeerEvent{peer: rPeer}
+		return err
+	} else if n != len(sentBytes) {
+		return io.ErrShortWrite
+	}
+	logger.Logger.Debug("Message sent", zap.String("peer", string(rPeer.peerID[:])), zap.String("bytes", fmt.Sprintf("%x", sentBytes)))
+
+	if rPeer.destroyed.Load() {
+		return peerIsDestroyedErr
+	}
+	rPeer.peerActivity <- nil
+	return nil
+}
+
+var (
+	peerIsDestroyedErr = errors.New("peer is destroyed")
+)
+
+func (p *peer) initBuffers(index, pieceLength int64) {
+	p.pieceLength = pieceLength
+	p.bytesRead = bitfield.BigEndian.New(uint64(pieceLength))
+	p.pieceDownloading = index
+	p.bytesDownloaded = 0
+}
+
+func (p *peer) writeBlock(message *pieceMessage) (bool, error) {
+	if message.index != int(p.pieceDownloading) {
+		return false, didNotAskForPieceError
+	}
+	for i := 0; i < len(message.block); i++ {
+		haveByte, err := p.bytesRead.TestBit(uint64(i + message.begin))
+		if err != nil {
+			return false, err
+		} else if !haveByte {
+			p.bytesDownloaded++
+		}
+		p.bytesRead.SetBit(uint64(i + message.begin))
+	}
+	copy(p.pieceBuffer[message.begin:], message.block[:])
+	return p.bytesDownloaded == p.pieceLength, nil
+}
+
+var (
+	didNotAskForPieceError = errors.New("piece was not requested to peer")
+	blockOutOfRangeError   = errors.New("block out of range of piece")
 )
