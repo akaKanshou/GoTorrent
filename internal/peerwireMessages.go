@@ -5,6 +5,8 @@ import (
 	"encoding/binary"
 	"errors"
 	"math/rand"
+
+	"gitlab.com/akaKanshou/gotorrent/logger"
 )
 
 const (
@@ -14,6 +16,10 @@ const (
 	infoHashOffset  = lenPStr + 9
 	peerIDOffset    = infoHashOffset + 20
 	handshakeLength = 49 + lenPStr
+)
+
+const (
+	maxRequestLength = 1 << 14
 )
 
 const (
@@ -27,7 +33,8 @@ const (
 	peerwirePieceID
 	peerwireCancelID
 	peerwirePortID
-	peerwireKeepAliveID // Not defined by spec - only for the application's use
+	peerwireKeepAliveID  // Not defined by spec - only for the application's use
+	peerwireMultiMessage // Not defined by spec - only for the application's use
 )
 
 // <pstrlen><pstr><reserved><info_hash><peer_id>
@@ -114,7 +121,7 @@ func (m *keepAliveMessage) messageType() byte {
 }
 
 func (m *keepAliveMessage) marshalMessage() []byte {
-	return make([]byte, 0)
+	return make([]byte, 4)
 }
 
 func (m *keepAliveMessage) unmarshalMessage(payload []byte) error {
@@ -316,9 +323,6 @@ func (p *pieceMessage) marshalMessage() []byte {
 }
 
 func (p *pieceMessage) unmarshalMessage(payload []byte) error {
-	if len(payload) != 8+len(p.block) {
-		return invalidMessageLengthError
-	}
 	p.index = int(binary.BigEndian.Uint32(payload))
 	p.begin = int(binary.BigEndian.Uint32(payload[4:]))
 	p.block = payload[8:]
@@ -449,6 +453,7 @@ func parseMessage(message []byte) (peerwireMessage, error) {
 		break
 	case peerwirePieceID:
 		pwMessage = &pieceMessage{}
+		logger.Logger.Debug("piece received")
 		break
 	case peerwireCancelID:
 		pwMessage = &cancelMessage{}
@@ -497,3 +502,41 @@ func peerIDGenerate() peerID {
 
 	return peerID
 }
+
+type multiMessage struct {
+	messages []peerwireMessage
+}
+
+func (m *multiMessage) messageType() byte {
+	return peerwireMultiMessage
+}
+
+func (m *multiMessage) marshalMessage() []byte {
+	payload := make([]byte, 0)
+	for _, message := range m.messages {
+		if message != nil {
+			payload = append(payload, message.marshalMessage()...)
+		}
+	}
+	return payload
+}
+
+func (m *multiMessage) unmarshalMessage(payload []byte) error {
+	return undefinedUnmarshalError
+}
+
+func newPipedRequestsMessage(index, pieceLength int64) *multiMessage {
+	messages := make([]peerwireMessage, 0)
+	for offset := 0; offset < int(pieceLength); offset += maxRequestLength {
+		messages = append(messages, &requestMessage{
+			index:  int(index),
+			begin:  offset,
+			length: min(maxRequestLength, int(pieceLength)-offset),
+		})
+	}
+	return &multiMessage{messages: messages}
+}
+
+var (
+	undefinedUnmarshalError = errors.New("undefined unmarshal type")
+)
