@@ -33,6 +33,7 @@ type infoDict struct {
 	multipleFiles bool
 }
 type bencodedData struct {
+	sizeData torrentSizeData
 	trackers announcers
 	metaInfo metaInfo
 	infoDict infoDict

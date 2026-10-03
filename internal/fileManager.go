@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math/bits"
 	"os"
 	"path/filepath"
 	"sync"
@@ -140,8 +141,12 @@ func (f *fileManager) writePiece(piece, length int64, buf []byte) error {
 		}
 	}
 
-	f.piecesDone.SetBit(uint64(piece))
-	f.piecesDownloaded++ // TODO: Only update if bit was off before
+	pieceState, _ := f.piecesDone.TestBit(uint64(piece))
+	if !pieceState {
+		f.piecesDone.SetBit(uint64(piece))
+		f.piecesDownloaded++
+	}
+
 	return nil
 }
 
@@ -269,4 +274,13 @@ func (f *fileManager) getSavedData() ([]byte, error) {
 		return nil, err
 	}
 	return buf, nil
+}
+
+func (f *fileManager) dataLeftToDownload() uint64 {
+	bytesLeft := f.totalLength
+	for index := range f.pieces {
+		bytesLeft -= int64(bits.OnesCount8(f.piecesDone.Bytes()[index])) * f.pieceLength
+	}
+	bytesLeft += f.pieceLength - f.getPieceLength(int64(f.piecesDone.Size()-1))
+	return uint64(bytesLeft)
 }

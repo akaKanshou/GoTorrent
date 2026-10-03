@@ -22,6 +22,8 @@ import (
 // TODO: test for larger files
 // TODO: torrents with multi-block pieces
 // TODO: http announce
+// TODO: regular health check
+// TODO: implement a better piece selection algorithm
 
 const (
 	playerUninitialized byte = iota
@@ -103,7 +105,14 @@ func (torrentPlayer *TorrentPlayer) addTorrent(torrent *Torrent) error {
 
 	torrentPlayer.fileManager = newFileManager(torrent.destPath, int64(torrent.localData.infoDict.pieceLength),
 		torrent.localData.infoDict.pieces, torrentPlayer.torrent.localData.infoHash)
+
 	err = torrentPlayer.fileManager.initFiles(torrent.localData.infoDict)
+	if err != nil {
+		return err
+	}
+
+	torrentPlayer.torrent.localData.sizeData.Left = torrentPlayer.fileManager.dataLeftToDownload()
+
 	return nil
 }
 
@@ -159,7 +168,7 @@ func (torrentPlayer *TorrentPlayer) getPeersFromTrackers(numwant int) ([]string,
 				tPeerAdds, err = udpTracker.announce(
 					torrentPlayer.torrent.localData.infoHash,
 					torrentPlayer.peerID,
-					udpTracker.trackerData.torrentSizeData,
+					torrentPlayer.torrent.localData.sizeData,
 					torrentPlayer.key,
 					udpEventNone,
 					uint32(numwant),
@@ -203,7 +212,7 @@ func (torrentPlayer *TorrentPlayer) announceCompletedTorrent() {
 				_, err = udpTracker.announce(
 					torrentPlayer.torrent.localData.infoHash,
 					torrentPlayer.peerID,
-					torrentSizeData{Downloaded: uint64(torrentPlayer.fileManager.totalLength)}, // TODO: Update statistics
+					torrentPlayer.torrent.localData.sizeData,
 					torrentPlayer.key,
 					udpEventCompleted,
 					15,
@@ -347,7 +356,8 @@ func (torrentPlayer *TorrentPlayer) eventLoop() {
 			verifyPieceEvent := event.(*verifyPieceEvent)
 			delete(torrentPlayer.fileManager.piecesInProgress, verifyPieceEvent.index)
 			verifyPieceEvent.peer.pieceDownloading = -1
-			// TODO: Edit torrent download size
+
+			torrentPlayer.torrent.localData.sizeData.Downloaded += uint64(verifyPieceEvent.peer.pieceLength)
 
 			shaVerified := torrentPlayer.fileManager.verifyPiece(verifyPieceEvent.peer.pieceBuffer[:verifyPieceEvent.peer.pieceLength], verifyPieceEvent.index)
 			if !shaVerified {
@@ -363,6 +373,8 @@ func (torrentPlayer *TorrentPlayer) eventLoop() {
 				logger.Logger.Error("Failed to write piece", zap.Error(err))
 			}
 			logger.Logger.Debug("Piece written to file", zap.Int64("piece", verifyPieceEvent.index))
+
+			torrentPlayer.torrent.localData.sizeData.Left -= uint64(verifyPieceEvent.peer.pieceLength)
 
 			torrentPlayer.broadcastToPeers(&haveMessage{pieceIndex: int(verifyPieceEvent.index)})
 			// TODO: only do the following depending on some configuration setting

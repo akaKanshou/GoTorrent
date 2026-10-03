@@ -54,12 +54,11 @@ type torrentSizeData struct {
 }
 
 type trackerData struct {
-	peers           []peer
-	metaData        metaData
-	torrentSizeData torrentSizeData
-	interval        time.Duration
-	seeders         uint32
-	leechers        uint32
+	peers    []peer
+	metaData metaData
+	interval time.Duration
+	seeders  uint32
+	leechers uint32
 }
 
 type trackerUDP struct {
