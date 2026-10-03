@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"crypto/sha1"
 	"errors"
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
@@ -26,6 +27,8 @@ type fileManager struct {
 	pieceBuffers     map[int64][]byte
 	mutex            sync.Mutex
 	piecesDownloaded int
+
+	progressFile string
 }
 
 type fileInfo struct {
@@ -35,7 +38,7 @@ type fileInfo struct {
 	length      int64
 }
 
-func newFileManager(destination string, pieceLength int64, pieces []hashBytes) *fileManager {
+func newFileManager(destination string, pieceLength int64, pieces []hashBytes, infoHash hashBytes) *fileManager {
 	fileManager := &fileManager{
 		destination:      filepath.Clean(destination),
 		pieceLength:      pieceLength,
@@ -43,6 +46,7 @@ func newFileManager(destination string, pieceLength int64, pieces []hashBytes) *
 		piecesDone:       bitfield.BigEndian.New(uint64(len(pieces))),
 		piecesInProgress: make(map[int64]*peer),
 		pieceBuffers:     make(map[int64][]byte),
+		progressFile:     filepath.Join(destination, fmt.Sprintf("gt_download%X", infoHash)),
 	}
 	return fileManager
 }
@@ -87,6 +91,19 @@ func (f *fileManager) initFiles(files infoDict) error {
 		}
 	}
 
+	// TODO: Create a flag to enable/disable this feature
+	// Init save progress file if it doesn't exist
+	err := f.initSavedProgress()
+	if err != nil {
+		return err
+	}
+
+	// Load progress
+	err = f.loadProgress()
+	if err != nil {
+		return err
+	}
+
 	return nil
 }
 
@@ -124,7 +141,7 @@ func (f *fileManager) writePiece(piece, length int64, buf []byte) error {
 	}
 
 	f.piecesDone.SetBit(uint64(piece))
-	f.piecesDownloaded++
+	f.piecesDownloaded++ // TODO: Only update if bit was off before
 	return nil
 }
 
@@ -194,3 +211,62 @@ var (
 	pieceNotAllocated               = errors.New("pieceNotAllocated")
 	shaHashFailed                   = errors.New("SHA1 hash of piece does not match")
 )
+
+func (f *fileManager) initSavedProgress() error {
+	fd, err := os.OpenFile(f.progressFile, os.O_WRONLY|os.O_EXCL|os.O_CREATE, 0600)
+	if err != nil && errors.Is(err, os.ErrExist) {
+		return nil
+	} else if err != nil {
+		return err
+	}
+	defer fd.Close()
+
+	logger.Logger.Debug("Initiating saved progress", zap.String("file", f.progressFile))
+	_, err = fd.Write(f.piecesDone.Bytes())
+	if err != nil {
+		return err
+	}
+
+	return nil
+}
+
+func (f *fileManager) loadProgress() error {
+	buf, err := f.getSavedData()
+	if err != nil {
+		return err
+	}
+	logger.Logger.Debug("Loading progress", zap.String("progress", fmt.Sprintf("%x", buf)))
+
+	f.piecesDone = bitfield.BigEndian.FromBytes(buf, f.piecesDone.Size())
+	return nil
+}
+
+func (f *fileManager) updateSavedProgress(index int64) error {
+	fd, err := os.OpenFile(f.progressFile, os.O_WRONLY, 0600)
+	if err != nil {
+		return err
+	}
+	defer fd.Close()
+
+	relByte := index / 8 * 8
+	_, err = fd.WriteAt(f.piecesDone.Bytes()[relByte:relByte+1], relByte)
+	if err != nil {
+		return err
+	}
+	return nil
+}
+
+func (f *fileManager) getSavedData() ([]byte, error) {
+	fd, err := os.OpenFile(f.progressFile, os.O_RDONLY, 0600)
+	if err != nil {
+		return nil, err
+	}
+	defer fd.Close()
+
+	buf := make([]byte, (len(f.pieces)+7)/8)
+	_, err = fd.Read(buf)
+	if err != nil {
+		return nil, err
+	}
+	return buf, nil
+}

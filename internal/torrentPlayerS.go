@@ -18,9 +18,7 @@ import (
 // TODO: stop torrent and free resources
 // TODO: seeding
 // TODO: implement sending pieces
-// TODO: broadcast have piece as pieces are downloaded
 // TODO: implement cmd interface
-// TODO: implement torrent saving
 // TODO: test for larger files
 // TODO: torrents with multi-block pieces
 // TODO: http announce
@@ -47,15 +45,17 @@ type TorrentPlayer struct {
 	Wg        sync.WaitGroup
 	eventChan chan event
 
-	fileManager *fileManager
+	fileManager            *fileManager
+	progressFileUpdateChan chan int64
 }
 
 // NewTorrentPlayer returns a new uninitialized torrent player
 func NewTorrentPlayer() *TorrentPlayer {
 	return &TorrentPlayer{
-		state:     playerUninitialized,
-		Wg:        sync.WaitGroup{},
-		eventChan: make(chan event, 256),
+		state:                  playerUninitialized,
+		Wg:                     sync.WaitGroup{},
+		eventChan:              make(chan event, 256),
+		progressFileUpdateChan: make(chan int64, 128),
 	}
 }
 
@@ -101,7 +101,8 @@ func (torrentPlayer *TorrentPlayer) addTorrent(torrent *Torrent) error {
 	logger.Logger.Info("Initialized TCP Listener", zap.Uint16("port", torrentPlayer.listeningPort),
 		zap.String("peerID", string(torrentPlayer.peerID[:])))
 
-	torrentPlayer.fileManager = newFileManager(torrent.destPath, int64(torrent.localData.infoDict.pieceLength), torrent.localData.infoDict.pieces)
+	torrentPlayer.fileManager = newFileManager(torrent.destPath, int64(torrent.localData.infoDict.pieceLength),
+		torrent.localData.infoDict.pieces, torrentPlayer.torrent.localData.infoHash)
 	err = torrentPlayer.fileManager.initFiles(torrent.localData.infoDict)
 	return nil
 }
@@ -124,7 +125,8 @@ func (torrentPlayer *TorrentPlayer) startTorrent() error {
 	}
 
 	go torrentPlayer.listenForHandshakes()
-	torrentPlayer.Wg.Add(1)
+	go torrentPlayer.saveProgress()
+	torrentPlayer.Wg.Add(2)
 
 	torrentPlayer.Wg.Wait()
 
@@ -361,13 +363,18 @@ func (torrentPlayer *TorrentPlayer) eventLoop() {
 				logger.Logger.Error("Failed to write piece", zap.Error(err))
 			}
 			logger.Logger.Debug("Piece written to file", zap.Int64("piece", verifyPieceEvent.index))
+
 			torrentPlayer.broadcastToPeers(&haveMessage{pieceIndex: int(verifyPieceEvent.index)})
+			// TODO: only do the following depending on some configuration setting
+			torrentPlayer.progressFileUpdateChan <- verifyPieceEvent.index
+
 			if torrentPlayer.fileManager.piecesDownloaded == len(torrentPlayer.fileManager.pieces) {
 				logger.Logger.Info("Torrent Completed!!!")
 				go torrentPlayer.announceCompletedTorrent()
 				torrentPlayer.Wg.Add(1)
 				continue
 			}
+
 			torrentPlayer.eventChan <- &peerAvailableForDownloadEvent{peer: verifyPieceEvent.peer}
 			continue
 
@@ -417,5 +424,21 @@ func (torrentPlayer *TorrentPlayer) keepAlive(rPeer *peer) {
 func (torrentPlayer *TorrentPlayer) broadcastToPeers(message peerwireMessage) {
 	for _, peer := range torrentPlayer.peers {
 		torrentPlayer.eventChan <- &outgoingMessageEvent{peer: peer, message: message}
+	}
+}
+
+func (torrentPlayer *TorrentPlayer) saveProgress() {
+	defer torrentPlayer.Wg.Done()
+
+	for {
+		index, ok := <-torrentPlayer.progressFileUpdateChan
+		if !ok {
+			return
+		}
+
+		err := torrentPlayer.fileManager.updateSavedProgress(index)
+		if err != nil {
+			logger.Logger.Error("Failed to save progress", zap.Error(err))
+		}
 	}
 }
