@@ -22,6 +22,8 @@ import (
 // TODO: implement cmd interface
 // TODO: implement torrent saving
 // TODO: test for larger files
+// TODO: torrents with multi-block pieces
+// TODO: http announce
 
 const (
 	playerUninitialized byte = iota
@@ -183,6 +185,52 @@ func (torrentPlayer *TorrentPlayer) getPeersFromTrackers(numwant int) ([]string,
 	return nil, trackersUnresponsiveError
 }
 
+func (torrentPlayer *TorrentPlayer) announceCompletedTorrent() {
+	defer torrentPlayer.Wg.Done()
+
+	var err error
+	for j, tier := range torrentPlayer.torrent.trackers {
+		logger.Logger.Debug("Announcing completion in tier", zap.Int("tier", j))
+		for i, iTracker := range tier {
+			logger.Logger.Debug("trying announce on index", zap.Int("index", i))
+			switch iTracker.getProtocol() {
+			case pUDP:
+				udpTracker := iTracker.(*trackerUDP)
+
+				logger.Logger.Debug("trying announce", zap.String("tracker", udpTracker.trackerData.metaData.announceUrl))
+				_, err = udpTracker.announce(
+					torrentPlayer.torrent.localData.infoHash,
+					torrentPlayer.peerID,
+					torrentSizeData{Downloaded: uint64(torrentPlayer.fileManager.totalLength)}, // TODO: Update statistics
+					torrentPlayer.key,
+					udpEventCompleted,
+					15,
+					torrentPlayer.listeningPort,
+				)
+				if err != nil {
+					logger.Logger.Error("Failed to announce peer", zap.Int("tier", j), zap.Error(err))
+				} else {
+					logger.Logger.Debug("Announced completion to torrent", zap.Int("tier", j))
+				}
+				break
+
+			case pHTTP:
+			default:
+				logger.Logger.Warn("Unknown tracker protocol", zap.Int("tier", j))
+				continue
+			}
+
+			if err != nil {
+				logger.Logger.Error("Failed to announce peer", zap.Int("tier", j), zap.Error(err))
+				continue
+			}
+
+			tier[0], tier[i] = tier[i], tier[0]
+			continue
+		}
+	}
+}
+
 // Goroutine to accept incoming TCP connections from remote peers
 func (torrentPlayer *TorrentPlayer) listenForHandshakes() {
 	defer torrentPlayer.Wg.Done()
@@ -194,6 +242,7 @@ func (torrentPlayer *TorrentPlayer) listenForHandshakes() {
 			logger.Logger.Error("Failed to accept Torrent connection", zap.Error(err))
 			return
 		}
+		logger.Logger.Debug("New incoming connection", zap.String("remoteAddr", conn.RemoteAddr().String()))
 		torrentPlayer.eventChan <- &newConnectionEvent{conn: conn}
 	}
 }
@@ -310,11 +359,15 @@ func (torrentPlayer *TorrentPlayer) eventLoop() {
 
 			if err != nil {
 				logger.Logger.Error("Failed to write piece", zap.Error(err))
-			} else if torrentPlayer.fileManager.piecesDownloaded == len(torrentPlayer.fileManager.pieces) {
-				logger.Logger.Info("Torrent Completed!!!")
-				return
 			}
 			logger.Logger.Debug("Piece written to file", zap.Int64("piece", verifyPieceEvent.index))
+			torrentPlayer.broadcastToPeers(&haveMessage{pieceIndex: int(verifyPieceEvent.index)})
+			if torrentPlayer.fileManager.piecesDownloaded == len(torrentPlayer.fileManager.pieces) {
+				logger.Logger.Info("Torrent Completed!!!")
+				go torrentPlayer.announceCompletedTorrent()
+				torrentPlayer.Wg.Add(1)
+				continue
+			}
 			torrentPlayer.eventChan <- &peerAvailableForDownloadEvent{peer: verifyPieceEvent.peer}
 			continue
 
@@ -358,5 +411,11 @@ func (torrentPlayer *TorrentPlayer) keepAlive(rPeer *peer) {
 			torrentPlayer.eventChan <- &destroyPeerEvent{rPeer}
 			return
 		}
+	}
+}
+
+func (torrentPlayer *TorrentPlayer) broadcastToPeers(message peerwireMessage) {
+	for _, peer := range torrentPlayer.peers {
+		torrentPlayer.eventChan <- &outgoingMessageEvent{peer: peer, message: message}
 	}
 }
