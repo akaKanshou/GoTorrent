@@ -55,9 +55,11 @@ func (torrentPlayer *TorrentPlayer) initiateHandshake(peerAddr string) {
 	n, err := peerConn.Write(req.marshalMessage())
 	if err != nil {
 		logger.Logger.Error("could not send handshake", zap.String("peer", peerAddr), zap.Error(err))
+		peerConn.Close()
 		return
 	} else if n != len(req.marshalMessage()) {
 		logger.Logger.Error("could not send handshake", zap.String("peer", peerAddr), zap.Int("bytes written", n))
+		peerConn.Close()
 		return
 	}
 
@@ -66,9 +68,11 @@ func (torrentPlayer *TorrentPlayer) initiateHandshake(peerAddr string) {
 	n, err = peerConn.Read(responseBuf)
 	if err != nil {
 		logger.Logger.Error("could not read handshake", zap.String("peer", peerAddr), zap.Error(err))
+		peerConn.Close()
 		return
 	} else if n != handshakeLength {
 		logger.Logger.Error("could not read handshake", zap.String("peer", peerAddr), zap.Int("bytes read", n))
+		peerConn.Close()
 		return
 	}
 
@@ -76,6 +80,7 @@ func (torrentPlayer *TorrentPlayer) initiateHandshake(peerAddr string) {
 	err = res.unmarshalMessage(responseBuf)
 	if err != nil {
 		logger.Logger.Error("invalid handshake response", zap.String("peer", peerAddr), zap.Error(err))
+		peerConn.Close()
 	}
 	logger.Logger.Info("handshake successful", zap.String("peer", peerAddr))
 
@@ -86,6 +91,53 @@ func (torrentPlayer *TorrentPlayer) initiateHandshake(peerAddr string) {
 	}
 	torrentPlayer.eventChan <- &outgoingMessageEvent{peer: peer,
 		message: &bitfieldMessage{bitfieldData: torrentPlayer.fileManager.piecesDone.Bytes()},
+	}
+}
+
+func (torrentPlayer *TorrentPlayer) handleHandshake(conn *net.TCPConn) {
+	res := handshakeMessage{
+		peerID:   torrentPlayer.peerID,
+		infoHash: torrentPlayer.torrent.localData.infoHash,
+	}
+
+	responseBuf := make([]byte, handshakeLength)
+	conn.SetDeadline(time.Now().Add(time.Minute))
+	n, err := conn.Read(responseBuf)
+	if err != nil {
+		logger.Logger.Error("could not read handshake", zap.String("peer", conn.RemoteAddr().String()), zap.Error(err))
+		conn.Close()
+		return
+	} else if n != handshakeLength {
+		logger.Logger.Error("could not read handshake", zap.String("peer", conn.RemoteAddr().String()), zap.Int("bytes read", n))
+		conn.Close()
+		return
+	}
+
+	var req handshakeMessage
+	err = req.unmarshalMessage(responseBuf)
+	if err != nil {
+		logger.Logger.Error("invalid handshake response", zap.String("peer", conn.RemoteAddr().String()), zap.Error(err))
+		conn.Close()
+		return
+	}
+
+	conn.SetDeadline(time.Now().Add(time.Minute))
+	n, err = conn.Write(req.marshalMessage())
+	if err != nil {
+		logger.Logger.Error("could not send handshake", zap.String("peer", conn.RemoteAddr().String()), zap.Error(err))
+		conn.Close()
+		return
+	} else if n != handshakeLength {
+		logger.Logger.Error("could not write handshake", zap.String("peer", conn.RemoteAddr().String()), zap.Int("bytes written", n))
+		conn.Close()
+		return
+	}
+	conn.SetDeadline(time.Time{})
+
+	peer := newPeer(conn, req.peerID, req.options&res.options,
+		int(torrentPlayer.torrent.localData.infoDict.pieceLength), len(torrentPlayer.torrent.localData.infoDict.pieces))
+	torrentPlayer.eventChan <- &newPeerEvent{
+		newPeer: peer,
 	}
 }
 

@@ -15,6 +15,14 @@ import (
 // TODO: Move the following files outside internal, in a separate package.
 // 1. torrentPlayerS.go
 
+// TODO: stop torrent and free resources
+// TODO: seeding
+// TODO: implement sending pieces
+// TODO: broadcast have piece as pieces are downloaded
+// TODO: implement cmd interface
+// TODO: implement torrent saving
+// TODO: test for larger files
+
 const (
 	playerUninitialized byte = iota
 	playerPaused
@@ -113,6 +121,9 @@ func (torrentPlayer *TorrentPlayer) startTorrent() error {
 		torrentPlayer.Wg.Add(1)
 	}
 
+	go torrentPlayer.listenForHandshakes()
+	torrentPlayer.Wg.Add(1)
+
 	torrentPlayer.Wg.Wait()
 
 	return nil
@@ -170,6 +181,21 @@ func (torrentPlayer *TorrentPlayer) getPeersFromTrackers(numwant int) ([]string,
 		}
 	}
 	return nil, trackersUnresponsiveError
+}
+
+// Goroutine to accept incoming TCP connections from remote peers
+func (torrentPlayer *TorrentPlayer) listenForHandshakes() {
+	defer torrentPlayer.Wg.Done()
+
+	// TODO: use atomic int for state
+	for torrentPlayer.state == playerStarted {
+		conn, err := torrentPlayer.listener.AcceptTCP()
+		if err != nil {
+			logger.Logger.Error("Failed to accept Torrent connection", zap.Error(err))
+			return
+		}
+		torrentPlayer.eventChan <- &newConnectionEvent{conn: conn}
+	}
 }
 
 // Goroutine to accept peers through torrentPlayer.peerChan
@@ -290,6 +316,15 @@ func (torrentPlayer *TorrentPlayer) eventLoop() {
 			}
 			logger.Logger.Debug("Piece written to file", zap.Int64("piece", verifyPieceEvent.index))
 			torrentPlayer.eventChan <- &peerAvailableForDownloadEvent{peer: verifyPieceEvent.peer}
+			continue
+
+		case tpNewConnectionEvent:
+			newConnectionEvent := event.(*newConnectionEvent)
+			if len(torrentPlayer.peers) > 45 {
+				logger.Logger.Debug("Too many peers; ignoring handshake", zap.Int("peers", len(torrentPlayer.peers)), zap.String("peer", newConnectionEvent.conn.RemoteAddr().String()))
+				continue
+			}
+			go torrentPlayer.handleHandshake(newConnectionEvent.conn)
 			continue
 		}
 	}

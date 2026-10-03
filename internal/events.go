@@ -1,5 +1,7 @@
 package internal
 
+import "net"
+
 const (
 	tpEventNewPeer = iota
 	tpEventDestroyPeer
@@ -7,6 +9,7 @@ const (
 	tpEventOutgoingMessage
 	tpPeerAvailableForDownloadEvent
 	tpVerifyPieceEvent
+	tpNewConnectionEvent
 )
 
 type event interface {
@@ -51,3 +54,9 @@ type verifyPieceEvent struct {
 }
 
 func (e *verifyPieceEvent) eventType() int { return tpVerifyPieceEvent }
+
+type newConnectionEvent struct {
+	conn *net.TCPConn
+}
+
+func (e *newConnectionEvent) eventType() int { return tpNewConnectionEvent }
