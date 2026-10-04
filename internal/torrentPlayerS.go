@@ -159,6 +159,10 @@ func (torrentPlayer *TorrentPlayer) stopTorrent() error {
 }
 
 func (torrentPlayer *TorrentPlayer) getPeersFromTrackers(numwant int) ([]string, error) {
+	event := udpEventNone
+	if torrentPlayer.torrent.localData.sizeData.Left == 0 {
+		event = udpEventCompleted
+	}
 	var tPeerAdds []string
 	var err error
 	for j, tier := range torrentPlayer.torrent.trackers {
@@ -176,7 +180,7 @@ func (torrentPlayer *TorrentPlayer) getPeersFromTrackers(numwant int) ([]string,
 					torrentPlayer.peerID,
 					torrentPlayer.torrent.localData.sizeData,
 					torrentPlayer.key,
-					udpEventNone,
+					event,
 					uint32(numwant),
 					torrentPlayer.listeningPort,
 				)

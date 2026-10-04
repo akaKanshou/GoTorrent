@@ -251,7 +251,7 @@ func (f *fileManager) updateSavedProgress(index int64) error {
 	}
 	defer fd.Close()
 
-	relByte := index / 8 * 8
+	relByte := index / 8
 	_, err = fd.WriteAt(f.piecesDone.Bytes()[relByte:relByte+1], relByte)
 	if err != nil {
 		return err
@@ -275,12 +275,15 @@ func (f *fileManager) getSavedData() ([]byte, error) {
 }
 
 func (f *fileManager) dataLeftToDownload() uint64 {
-	bytesLeft := f.totalLength
-	for index := range f.pieces {
-		bytesLeft -= int64(bits.OnesCount8(f.piecesDone.Bytes()[index])) * f.pieceLength
+	bytesDownloaded := int64(0)
+	for _, bt := range f.piecesDone.Bytes() {
+		bytesDownloaded += int64(bits.OnesCount8(bt)) * f.pieceLength
 	}
-	bytesLeft += f.pieceLength - f.getPieceLength(int64(f.piecesDone.Size()-1))
-	return uint64(bytesLeft)
+	haveLastPiece, _ := f.piecesDone.TestBit(f.piecesDone.Size() - 1)
+	if haveLastPiece {
+		bytesDownloaded -= f.pieceLength - f.getPieceLength(int64(f.piecesDone.Size()-1))
+	}
+	return uint64(f.totalLength - bytesDownloaded)
 }
 
 // TODO: introduce caching pieces
