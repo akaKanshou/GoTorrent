@@ -110,12 +110,14 @@ func (f *fileManager) initFiles(files infoDict) error {
 
 func (f *fileManager) writePiece(piece, length int64, buf []byte) error {
 	if piece < 0 || length < 0 {
+		logger.Logger.Error("Failed to write piece", zap.Error(invalidPieceOffsetOrLengthError))
 		return invalidPieceOffsetOrLengthError
 	}
 	buf = buf[:length]
 
 	firstFile := f.getFirstFileForPiece(piece)
 	if firstFile == -1 {
+		logger.Logger.Error("Failed to write piece", zap.Error(pieceOutOfRangeError))
 		return pieceOutOfRangeError
 	}
 
@@ -131,6 +133,7 @@ func (f *fileManager) writePiece(piece, length int64, buf []byte) error {
 			zap.Int64("write length", bytesWritten))
 		err := f.writeToFile(&file, fileByteOffset, bytesWritten, buf)
 		if err != nil {
+			logger.Logger.Error("Failed to write piece", zap.Error(err))
 			return err
 		}
 
@@ -141,12 +144,7 @@ func (f *fileManager) writePiece(piece, length int64, buf []byte) error {
 		}
 	}
 
-	pieceState, _ := f.piecesDone.TestBit(uint64(piece))
-	if !pieceState {
-		f.piecesDone.SetBit(uint64(piece))
-		f.piecesDownloaded++
-	}
-
+	logger.Logger.Debug("Piece written to file", zap.Int64("piece", piece))
 	return nil
 }
 

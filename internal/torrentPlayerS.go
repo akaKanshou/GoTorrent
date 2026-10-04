@@ -373,14 +373,14 @@ func (torrentPlayer *TorrentPlayer) eventLoop() {
 				continue
 			}
 			logger.Logger.Debug("Piece verified", zap.String("peer", string(verifyPieceEvent.peer.peerID[:])), zap.Int64("piece", verifyPieceEvent.index))
-			err := torrentPlayer.fileManager.writePiece(verifyPieceEvent.index, verifyPieceEvent.peer.pieceLength, verifyPieceEvent.peer.pieceBuffer)
-
-			if err != nil {
-				logger.Logger.Error("Failed to write piece", zap.Error(err))
-			}
-			logger.Logger.Debug("Piece written to file", zap.Int64("piece", verifyPieceEvent.index))
+			go torrentPlayer.fileManager.writePiece(verifyPieceEvent.index, verifyPieceEvent.peer.pieceLength, verifyPieceEvent.peer.pieceBuffer)
 
 			torrentPlayer.torrent.localData.sizeData.Left -= uint64(verifyPieceEvent.peer.pieceLength)
+			pieceState, _ := torrentPlayer.fileManager.piecesDone.TestBit(uint64(verifyPieceEvent.index))
+			if !pieceState {
+				torrentPlayer.fileManager.piecesDone.SetBit(uint64(verifyPieceEvent.index))
+				torrentPlayer.fileManager.piecesDownloaded++
+			}
 
 			torrentPlayer.broadcastToPeers(&haveMessage{pieceIndex: int(verifyPieceEvent.index)})
 			// TODO: only do the following depending on some configuration setting
