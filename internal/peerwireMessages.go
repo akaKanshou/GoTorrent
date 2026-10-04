@@ -5,6 +5,7 @@ import (
 	"encoding/binary"
 	"errors"
 	"math/rand"
+	"time"
 
 	"gitlab.com/akaKanshou/gotorrent/logger"
 )
@@ -308,6 +309,9 @@ type pieceMessage struct {
 
 	// Byte data of the specified block
 	block []byte
+
+	// Time it took for the message to be transmitted
+	transmissionTime time.Duration
 }
 
 func (p *pieceMessage) messageType() byte {
@@ -408,7 +412,7 @@ const (
 // parseMessage takes a message as an input and returns a peerwireMessage.
 // Returns an error if the message structure is invalid. Does NOT check the validity of the payload.
 // Checks like spare bits of bitfields being OFF are not performed here.
-func parseMessage(message []byte) (peerwireMessage, error) {
+func parseMessage(message []byte, downloadTime time.Duration) (peerwireMessage, error) {
 	if len(message) < 4 {
 		// Can't have length prefix
 		return nil, invalidMessageLengthError
@@ -452,7 +456,9 @@ func parseMessage(message []byte) (peerwireMessage, error) {
 		pwMessage = &requestMessage{}
 		break
 	case peerwirePieceID:
-		pwMessage = &pieceMessage{}
+		pwMessage = &pieceMessage{
+			transmissionTime: downloadTime,
+		}
 		logger.Logger.Debug("piece received")
 		break
 	case peerwireCancelID:

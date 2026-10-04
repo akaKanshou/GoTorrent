@@ -49,6 +49,9 @@ type TorrentPlayer struct {
 
 	fileManager            *fileManager
 	progressFileUpdateChan chan int64
+
+	unchokePeersChan          chan any
+	lastOptimisticUnchokeTime time.Time
 }
 
 // NewTorrentPlayer returns a new uninitialized torrent player
@@ -58,6 +61,7 @@ func NewTorrentPlayer() *TorrentPlayer {
 		Wg:                     sync.WaitGroup{},
 		eventChan:              make(chan event, 256),
 		progressFileUpdateChan: make(chan int64, 128),
+		unchokePeersChan:       make(chan any, 128),
 	}
 }
 
@@ -135,7 +139,8 @@ func (torrentPlayer *TorrentPlayer) startTorrent() error {
 
 	go torrentPlayer.listenForHandshakes()
 	go torrentPlayer.saveProgress()
-	torrentPlayer.Wg.Add(2)
+	go torrentPlayer.unchokeEventTimer()
+	torrentPlayer.Wg.Add(3)
 
 	torrentPlayer.Wg.Wait()
 
@@ -314,6 +319,7 @@ func (torrentPlayer *TorrentPlayer) eventLoop() {
 		case tpEventDestroyPeer:
 			destroyPeerEvent := event.(*destroyPeerEvent)
 			torrentPlayer.destroyPeer(destroyPeerEvent.peer)
+			torrentPlayer.unchokePeersChan <- nil
 			continue
 
 		case tpEventIncomingMessage:
@@ -398,6 +404,15 @@ func (torrentPlayer *TorrentPlayer) eventLoop() {
 			}
 			go torrentPlayer.handleHandshake(newConnectionEvent.conn)
 			continue
+
+		case tpUnchokeEvent:
+			if torrentPlayer.torrent.localData.sizeData.Left > 0 {
+				torrentPlayer.unchokePeersAsLeecher()
+			} else {
+				/* torrentPlayer.unchokePeersAsSeeder() */ // TODO: implement seeder unchoking algorithm
+				torrentPlayer.unchokePeersAsLeecher()
+			}
+			continue
 		}
 	}
 }
@@ -451,6 +466,60 @@ func (torrentPlayer *TorrentPlayer) saveProgress() {
 		err := torrentPlayer.fileManager.updateSavedProgress(index)
 		if err != nil {
 			logger.Logger.Error("Failed to save progress", zap.Error(err))
+		}
+	}
+}
+
+func (torrentPlayer *TorrentPlayer) unchokeEventTimer() {
+	defer torrentPlayer.Wg.Done()
+
+	for torrentPlayer.state == playerStarted /*&& torrentPlayer.torrent.localData.sizeData.Left > 0 */ {
+		select { // Block till unchoke event or 10 seconds
+		case _, ok := <-torrentPlayer.unchokePeersChan:
+			if !ok {
+				return
+			}
+		case <-time.After(time.Second * 10):
+		}
+
+		torrentPlayer.eventChan <- &unchokeEvent{}
+	}
+}
+
+func (torrentPlayer *TorrentPlayer) unchokePeersAsLeecher() {
+	forSorting, toChoke := filterInterestedPeers(torrentPlayer.peers)
+	forSorting = sortPeersForUnchokeAsLeecher(forSorting)
+
+	toUnchoke := forSorting[:min(len(forSorting), 3)]
+	toChoke = append(toChoke, forSorting[min(len(forSorting), 3):]...)
+
+	if time.Since(torrentPlayer.lastOptimisticUnchokeTime) > 30*time.Second {
+		torrentPlayer.lastOptimisticUnchokeTime = time.Now()
+
+		for len(toChoke) > 0 {
+			p := rand.IntN(len(toChoke))
+			peer := toChoke[p]
+
+			toUnchoke = append(toUnchoke, peer)
+			toChoke = append(toChoke[:p], toChoke[p+1:]...)
+
+			if peer.peerInterested {
+				break
+			}
+		}
+	}
+
+	for _, peer := range toUnchoke {
+		torrentPlayer.eventChan <- &outgoingMessageEvent{
+			peer:    peer,
+			message: &unchokeMessage{},
+		}
+	}
+
+	for _, peer := range toChoke {
+		torrentPlayer.eventChan <- &outgoingMessageEvent{
+			peer:    peer,
+			message: &chokeMessage{},
 		}
 	}
 }

@@ -10,6 +10,7 @@ const (
 	tpPeerAvailableForDownloadEvent
 	tpVerifyPieceEvent
 	tpNewConnectionEvent
+	tpUnchokeEvent
 )
 
 type event interface {
@@ -60,3 +61,7 @@ type newConnectionEvent struct {
 }
 
 func (e *newConnectionEvent) eventType() int { return tpNewConnectionEvent }
+
+type unchokeEvent struct{}
+
+func (e *unchokeEvent) eventType() int { return tpUnchokeEvent }

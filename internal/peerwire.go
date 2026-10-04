@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"slices"
 	"sync/atomic"
 	"time"
 
@@ -163,6 +164,8 @@ func newPeer(conn net.Conn, peerID peerID, options uint64, pieceLength, numPiece
 		bytesRead:        bitfield.BigEndian.New(uint64(pieceLength)),
 		pieceLength:      int64(pieceLength),
 		pieceDownloading: -1,
+
+		downloadRate: atomic.Int64{},
 	}
 	return peer
 }
@@ -195,13 +198,14 @@ func (torrentPlayer *TorrentPlayer) listenToPeer(peer *peer) {
 			buffer = append(buffer, make([]byte, length+4-len(buffer))...)
 		}
 
+		startTime := time.Now()
 		err = readNBytes(buffer[4:], peer.conn, length)
 		if err != nil {
 			break
 		}
 
 		var message peerwireMessage
-		message, err = parseMessage(buffer[:4+length])
+		message, err = parseMessage(buffer[:4+length], time.Since(startTime))
 		if err != nil {
 			break
 		}
@@ -260,11 +264,13 @@ func (torrentPlayer *TorrentPlayer) handleMessage(rPeer *peer, message peerwireM
 		rPeer.peerInterested = true
 		logger.Logger.Debug("peer interested in client", zap.String("peer", rPeer.conn.RemoteAddr().String()),
 			zap.String("peerID", string(rPeer.peerID[:])))
+		torrentPlayer.unchokePeersChan <- nil
 		break
 	case peerwireNotInterestedID:
 		rPeer.peerInterested = false
 		logger.Logger.Debug("peer not interested in client", zap.String("peer", rPeer.conn.RemoteAddr().String()),
 			zap.String("peerID", string(rPeer.peerID[:])))
+		torrentPlayer.unchokePeersChan <- nil
 		break
 
 	case peerwireHaveID:
@@ -286,8 +292,11 @@ func (torrentPlayer *TorrentPlayer) handleMessage(rPeer *peer, message peerwireM
 		if err != nil {
 			return err
 		}
-		if !rPeer.amInterested && torrentPlayer.testInterested(rPeer) {
+		if !rPeer.amInterested && testInterested(torrentPlayer.fileManager.piecesDone, rPeer.piecesAvailable) {
 			torrentPlayer.eventChan <- &outgoingMessageEvent{peer: rPeer, message: &interestedMessage{}}
+		}
+		if !rPeer.peerInterested && testInterested(rPeer.piecesAvailable, torrentPlayer.fileManager.piecesDone) {
+			rPeer.peerInterested = true
 		}
 		logger.Logger.Debug("Setting bitfield", zap.String("peer", string(rPeer.peerID[:])), zap.String("bitfield",
 			fmt.Sprintf("%x", rPeer.piecesAvailable.Bytes())))
@@ -295,6 +304,8 @@ func (torrentPlayer *TorrentPlayer) handleMessage(rPeer *peer, message peerwireM
 
 	case peerwirePieceID:
 		pwPieceMessage := message.(*pieceMessage)
+		rPeer.lastBlockUploadTime = time.Now()
+		rPeer.uploadRate = int64(len(pwPieceMessage.block)) * int64(time.Second/pwPieceMessage.transmissionTime)
 		pieceDone, err := rPeer.writeBlock(pwPieceMessage)
 		if err != nil {
 			return err
@@ -329,13 +340,19 @@ func (torrentPlayer *TorrentPlayer) handleMessage(rPeer *peer, message peerwireM
 
 func validateOutgoingMessage(rPeer *peer, message peerwireMessage) error {
 	switch message.messageType() {
-	case peerwireHaveID:
-	case peerwireBitfieldID:
 	case peerwireCancelID:
 	case peerwireKeepAliveID:
 		// No check
 	case peerwirePortID:
 		// Not implemented
+		break
+
+	case peerwireHaveID:
+		haveMessage := message.(*haveMessage)
+		peerHavePiece, _ := rPeer.piecesAvailable.TestBit(uint64(haveMessage.pieceIndex))
+		if !rPeer.peerInterested && !peerHavePiece {
+			rPeer.peerInterested = true
+		}
 		break
 
 	case peerwireChokeID:
@@ -443,10 +460,10 @@ func (torrentPlayer *TorrentPlayer) setBitfield(rPeer *peer, pwBitfield []byte) 
 	return nil
 }
 
-func (torrentPlayer *TorrentPlayer) testInterested(rPeer *peer) bool {
-	for i := range torrentPlayer.torrent.localData.infoDict.pieces {
-		iHavePiece, _ := torrentPlayer.fileManager.piecesDone.TestBit(uint64(i))
-		uHavePiece, _ := rPeer.piecesAvailable.TestBit(uint64(i))
+func testInterested(bf, target *bitfield.BitField) bool {
+	for i := range bf.Size() {
+		iHavePiece, _ := bf.TestBit(uint64(i))
+		uHavePiece, _ := target.TestBit(uint64(i))
 		if !iHavePiece && uHavePiece {
 			return true
 		}
@@ -523,3 +540,34 @@ var (
 	didNotAskForPieceError = errors.New("piece was not requested to peer")
 	blockOutOfRangeError   = errors.New("block out of range of piece")
 )
+
+func filterInterestedPeers(peers []*peer) ([]*peer, []*peer) {
+	interested, uninterested := make([]*peer, 0), make([]*peer, 0)
+	for _, peer := range peers {
+		if peer.peerInterested {
+			interested = append(interested, peer)
+		} else {
+			uninterested = append(uninterested, peer)
+		}
+	}
+
+	return interested, uninterested
+}
+
+func sortPeersForUnchokeAsLeecher(peers []*peer) []*peer {
+	for _, peer := range peers {
+		if time.Since(peer.lastBlockUploadTime) > 30*time.Second {
+			peer.uploadRate = 0
+		}
+	}
+	slices.SortFunc(peers, func(a, b *peer) int {
+		if a.uploadRate == b.uploadRate {
+			return 0
+		} else if a.uploadRate < b.uploadRate {
+			return -1
+		} else {
+			return 1
+		}
+	})
+	return peers
+}

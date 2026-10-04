@@ -40,6 +40,10 @@ type peer struct {
 	bytesRead        *bitfield.BitField
 	pieceLength      int64
 	bytesDownloaded  int64
+
+	downloadRate        atomic.Int64
+	uploadRate          int64
+	lastBlockUploadTime time.Time
 }
 
 type metaData struct {
