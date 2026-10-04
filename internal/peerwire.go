@@ -174,7 +174,12 @@ func (torrentPlayer *TorrentPlayer) writeToPeer(peer *peer) {
 	defer torrentPlayer.Wg.Done()
 
 	// TODO: Track number of pending messages per peer, and drop messages if it would block
-	for message := range peer.sendMessageChan {
+	for {
+		message, ok := <-peer.sendMessageChan
+		if !ok {
+			return
+		}
+
 		err := torrentPlayer.sendMessage(peer, message)
 		if err != nil {
 			peer.destroyed.Store(true)
@@ -221,6 +226,9 @@ func (torrentPlayer *TorrentPlayer) listenToPeer(peer *peer) {
 	if err != nil {
 		logger.Logger.Error("could not read from peer", zap.String("peer", peer.conn.RemoteAddr().String()), zap.Error(err))
 	}
+
+	peer.destroyed.Store(true)
+	torrentPlayer.eventChan <- &destroyPeerEvent{peer: peer}
 }
 
 func readNBytes(buffer []byte, conn net.Conn, length int) error {
@@ -358,6 +366,7 @@ func validateOutgoingMessage(rPeer *peer, message peerwireMessage) error {
 	switch message.messageType() {
 	case peerwireCancelID:
 	case peerwireKeepAliveID:
+	case peerwireBitfieldID:
 		// No check
 	case peerwirePortID:
 		// Not implemented

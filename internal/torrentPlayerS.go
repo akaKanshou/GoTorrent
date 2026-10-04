@@ -4,7 +4,6 @@ import (
 	"errors"
 	"math/rand/v2"
 	"net"
-	"slices"
 	"sync"
 	"time"
 
@@ -285,20 +284,17 @@ func (torrentPlayer *TorrentPlayer) acceptPeers(nPeer *peer) {
 }
 
 func (torrentPlayer *TorrentPlayer) destroyPeer(nPeer *peer) {
-	index := slices.IndexFunc(torrentPlayer.peers, func(rPeer *peer) bool {
-		return slices.Compare(nPeer.peerID[:], rPeer.peerID[:]) == 0
-	})
-	if index == -1 {
-		logger.Logger.Warn("Tried to destroy non-existent peer", zap.String("peer", string(nPeer.peerID[:])))
-		return
-	} else {
-		// Have not used slices.Delete in favor of this homemade deletion for efficient deletion
-		lenPeers := len(torrentPlayer.peers)
-		torrentPlayer.peers[index].conn.Close()
-		torrentPlayer.peers[index] = torrentPlayer.peers[lenPeers-1]
-		torrentPlayer.peers = torrentPlayer.peers[:lenPeers-1]
+	newPeerList := make([]*peer, 0, len(torrentPlayer.peers))
+	for _, peer := range torrentPlayer.peers {
+		if peer.destroyed.Load() {
+			peer.conn.Close()
+			close(peer.sendMessageChan)
+			logger.Logger.Debug("Destroyed peer", zap.String("peer", string(nPeer.peerID[:])))
+		} else {
+			newPeerList = append(newPeerList, peer)
+		}
 	}
-	logger.Logger.Debug("Destroyed peer", zap.String("peer", string(nPeer.peerID[:])))
+	torrentPlayer.peers = newPeerList
 }
 
 var (
@@ -333,6 +329,7 @@ func (torrentPlayer *TorrentPlayer) eventLoop() {
 			if err != nil {
 				logger.Logger.Error("Failed to handle incoming message", zap.Error(err))
 				// TODO: Add check if error was peer-side or client-side
+				incomingMessageEvent.peer.destroyed.Store(true)
 				torrentPlayer.destroyPeer(incomingMessageEvent.peer)
 			}
 			continue
