@@ -109,7 +109,7 @@ func (f *fileManager) initFiles(files infoDict) error {
 }
 
 func (f *fileManager) writePiece(piece, length int64, buf []byte) error {
-	if piece < 0 || length < 0 {
+	if piece < 0 || length < 0 || f.getPieceLength(piece) < length {
 		logger.Logger.Error("Failed to write piece", zap.Error(invalidPieceOffsetOrLengthError))
 		return invalidPieceOffsetOrLengthError
 	}
@@ -281,4 +281,54 @@ func (f *fileManager) dataLeftToDownload() uint64 {
 	}
 	bytesLeft += f.pieceLength - f.getPieceLength(int64(f.piecesDone.Size()-1))
 	return uint64(bytesLeft)
+}
+
+// TODO: introduce caching pieces
+func (f *fileManager) readBlockFromFile(index, begin, length int64) ([]byte, error) {
+	if index < 0 || length < 0 || f.getPieceLength(index) < length {
+		logger.Logger.Error("Failed to write piece", zap.Error(invalidPieceOffsetOrLengthError))
+		return nil, invalidPieceOffsetOrLengthError
+	}
+
+	firstFile := f.getFirstFileForPiece(index)
+	if firstFile == -1 {
+		return nil, pieceOutOfRangeError
+	}
+
+	seek := int64(0)
+	piece := make([]byte, length)
+
+	byteOffset := index*f.pieceLength + begin
+
+	for _, file := range f.files[firstFile:] {
+		fileByteOffsetGlobal := file.pieceBegin*f.pieceLength + file.offsetBegin
+		fileByteOffset := max(byteOffset-fileByteOffsetGlobal, 0)
+
+		n, err := f.readFromFile(file, fileByteOffset, piece[seek:])
+		if err != nil {
+			return nil, err
+		}
+
+		seek += n
+		if seek == length {
+			break
+		}
+	}
+
+	return piece, nil
+}
+
+func (f *fileManager) readFromFile(file fileInfo, offset int64, buffer []byte) (int64, error) {
+	fd, err := os.OpenFile(file.filePath, os.O_RDONLY, 0600)
+	if err != nil {
+		return 0, err
+	}
+	defer fd.Close()
+
+	n, err := fd.ReadAt(buffer, offset)
+	if err != nil {
+		return 0, err
+	}
+
+	return int64(n), err
 }

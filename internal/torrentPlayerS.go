@@ -24,6 +24,7 @@ import (
 // TODO: http announce
 // TODO: regular health check
 // TODO: implement a better piece selection algorithm
+// TODO: check condition of file containing piece
 
 const (
 	playerUninitialized byte = iota
@@ -521,5 +522,22 @@ func (torrentPlayer *TorrentPlayer) unchokePeersAsLeecher() {
 			peer:    peer,
 			message: &chokeMessage{},
 		}
+	}
+}
+
+func (torrentPlayer *TorrentPlayer) sendPiece(rPeer *peer, index, begin, length int) {
+	block, err := torrentPlayer.fileManager.readBlockFromFile(int64(index), int64(begin), int64(length))
+	if err != nil {
+		logger.Logger.Error("Failed to read block", zap.Error(err))
+		return
+	}
+
+	torrentPlayer.eventChan <- &outgoingMessageEvent{
+		peer: rPeer,
+		message: &pieceMessage{
+			index: index,
+			begin: begin,
+			block: block,
+		},
 	}
 }

@@ -319,6 +319,22 @@ func (torrentPlayer *TorrentPlayer) handleMessage(rPeer *peer, message peerwireM
 		break
 
 	case peerwireRequestID:
+		requestMessage := message.(*requestMessage)
+		havePiece, err := torrentPlayer.fileManager.piecesDone.TestBit(uint64(requestMessage.index))
+		if err != nil {
+			return err
+		}
+		if rPeer.amChoking {
+			logger.Logger.Debug("Peer requesting piece is choked", zap.String("peer", fmt.Sprintf("%x", rPeer.peerID[:])))
+			return nil
+		}
+		if !havePiece {
+			logger.Logger.Debug("Piece requested by peer is not available on client", zap.String("peer", fmt.Sprintf("%x", rPeer.peerID[:])), zap.Int("index", requestMessage.index))
+			return nil
+		}
+		go torrentPlayer.sendPiece(rPeer, requestMessage.index, requestMessage.begin, requestMessage.length)
+		break
+
 	case peerwireCancelID:
 	case peerwirePortID:
 		logger.Logger.Debug("Unimplemented message", zap.String("peer", string(rPeer.peerID[:])),
@@ -486,10 +502,16 @@ func (torrentPlayer *TorrentPlayer) sendMessage(rPeer *peer, message peerwireMes
 		return peerIsDestroyedErr
 	}
 
+	_, isPieceMessage := message.(*pieceMessage)
+
 	sentBytes := message.marshalMessage()
 	logger.Logger.Debug("Sending message", zap.String("peer", string(rPeer.peerID[:])), zap.String("bytes", fmt.Sprintf("%x", sentBytes)))
+
 	rPeer.conn.SetWriteDeadline(time.Now().Add(90 * time.Second))
 	defer rPeer.conn.SetWriteDeadline(time.Time{})
+
+	startTime := time.Now()
+
 	n, err := rPeer.conn.Write(sentBytes)
 	if err != nil {
 		logger.Logger.Error("Failed to send message", zap.String("peer", string(rPeer.peerID[:])), zap.Error(err))
@@ -499,6 +521,11 @@ func (torrentPlayer *TorrentPlayer) sendMessage(rPeer *peer, message peerwireMes
 	} else if n != len(sentBytes) {
 		return io.ErrShortWrite
 	}
+
+	if isPieceMessage {
+		rPeer.downloadRate.Store(int64(n) * int64(time.Second/time.Since(startTime)))
+	}
+
 	logger.Logger.Debug("Message sent", zap.String("peer", string(rPeer.peerID[:])), zap.String("bytes", fmt.Sprintf("%x", sentBytes)))
 
 	if rPeer.destroyed.Load() {
