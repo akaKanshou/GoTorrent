@@ -2,6 +2,7 @@ package internal
 
 import (
 	"fmt"
+	"math"
 	"strconv"
 	"strings"
 	"time"
@@ -91,14 +92,14 @@ func (m *modelTUI) View() string {
 
 	data := [][]string{
 		{
-			strconv.FormatUint(m.total, 10),
-			strconv.FormatUint(m.total-m.progress.sizeData.Left, 10),
-			strconv.FormatUint(m.progress.sizeData.Left, 10),
+			cleanBytes(m.total),
+			cleanBytes(m.total - m.progress.sizeData.Left),
+			cleanBytes(m.progress.sizeData.Left),
 
 			strconv.FormatUint(m.progress.peers, 10),
 
-			strconv.FormatUint(m.progress.sizeData.Downloaded, 10),
-			strconv.FormatUint(m.progress.sizeData.Uploaded, 10),
+			cleanBytes(m.progress.sizeData.Downloaded),
+			cleanBytes(m.progress.sizeData.Uploaded),
 		},
 	}
 
@@ -110,13 +111,16 @@ func (m *modelTUI) View() string {
 
 	progressBar := ""
 	if m.progress.isDownloading {
-		progressPercentage := ((m.total - m.progress.sizeData.Left) * 100) / m.total
+		progressPercentage := ((m.total - m.progress.sizeData.Left) * 80) / m.total
+		downloadSpeedString := cleanTransferRate(m.progress.downloadSpeed * 8)
 		eta := "∞"
 		if m.progress.downloadSpeed > 0 {
-			eta = (time.Duration((m.total-m.progress.sizeData.Left)/m.progress.downloadSpeed) * time.Second).String()
+			eta = cleanDuration(time.Duration((m.total-m.progress.sizeData.Left)/m.progress.downloadSpeed) * time.Second)
+
 		}
-		progressBar = fmt.Sprintf("Progress (%d%%): [%s%s]\nETA:%s\n",
-			progressPercentage, strings.Repeat("=", int(progressPercentage/2)), strings.Repeat(" ", 50-int(progressPercentage/2)), eta)
+		progressBar = fmt.Sprintf("Progress (%d%%): [%s%s]\nETA:%s\t\t%s\n",
+			progressPercentage, strings.Repeat("=", int(progressPercentage/2)), strings.Repeat(" ", 50-int(progressPercentage/2)),
+			eta, downloadSpeedString)
 	}
 
 	s = fmt.Sprintf("%s\n%s\n%s", s, progressTable.Render(), progressBar)
@@ -129,5 +133,28 @@ func (m *modelTUI) View() string {
 }
 
 var (
-	headers = []string{"Total", "Downloaded", "Left", "Peers", "Bytes downloaded", "Bytes uploaded"}
+	headers    = []string{"Total", "Downloaded", "Left", "Peers", "Bytes downloaded", "Bytes uploaded"}
+	qualifiers = []string{"", "K", "M", "G", "T", "P"}
 )
+
+func cleanBytes(bytes uint64) string {
+	if bytes == 0 {
+		return "0 B"
+	}
+	bValue := float64(bytes)
+	power := math.Floor(math.Log(bValue) / math.Log(1000))
+	return fmt.Sprintf("%.2f %sB", bValue/math.Pow(1000, power), qualifiers[int(power)])
+}
+
+func cleanTransferRate(bytes uint64) string {
+	if bytes == 0 {
+		return "0 b/s"
+	}
+	bValue := float64(bytes * 8)
+	power := math.Floor(math.Log(bValue) / math.Log(1000))
+	return fmt.Sprintf("%.2f %sb/s", bValue/math.Pow(1000, power), qualifiers[int(power)])
+}
+
+func cleanDuration(duration time.Duration) string {
+	return duration.Round(time.Second).String()
+}
