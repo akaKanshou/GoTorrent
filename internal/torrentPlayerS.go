@@ -7,6 +7,7 @@ import (
 	"sync"
 	"time"
 
+	tea "github.com/charmbracelet/bubbletea"
 	"gitlab.com/akaKanshou/gotorrent/logger"
 	"go.uber.org/zap"
 )
@@ -52,6 +53,9 @@ type TorrentPlayer struct {
 
 	unchokePeersChan          chan any
 	lastOptimisticUnchokeTime time.Time
+
+	// bubble tea TUI model
+	modelTUI *modelTUI
 }
 
 // NewTorrentPlayer returns a new uninitialized torrent player
@@ -117,6 +121,13 @@ func (torrentPlayer *TorrentPlayer) addTorrent(torrent *Torrent) error {
 
 	torrentPlayer.torrent.localData.sizeData.Left = torrentPlayer.fileManager.dataLeftToDownload()
 
+	torrentPlayer.modelTUI = initialModel(
+		torrentPlayer.torrent.localData.sizeData,
+		uint64(torrentPlayer.fileManager.totalLength),
+		torrentPlayer.torrent.localData.sizeData.Left > 0,
+		torrentPlayer,
+	)
+
 	return nil
 }
 
@@ -140,7 +151,8 @@ func (torrentPlayer *TorrentPlayer) startTorrent() error {
 	go torrentPlayer.listenForHandshakes()
 	go torrentPlayer.saveProgress()
 	go torrentPlayer.unchokeEventTimer()
-	torrentPlayer.Wg.Add(3)
+	go torrentPlayer.runTUI()
+	torrentPlayer.Wg.Add(4)
 
 	torrentPlayer.Wg.Wait()
 
@@ -154,6 +166,7 @@ func (torrentPlayer *TorrentPlayer) pauseTorrent() error {
 }
 
 func (torrentPlayer *TorrentPlayer) stopTorrent() error {
+	close(torrentPlayer.modelTUI.progressChan) // TODO: free peer and file manager resources
 	return nil
 }
 
@@ -388,6 +401,8 @@ func (torrentPlayer *TorrentPlayer) eventLoop() {
 			// TODO: only do the following depending on some configuration setting
 			torrentPlayer.progressFileUpdateChan <- verifyPieceEvent.index
 
+			torrentPlayer.eventChan <- &updateTUIEvent{}
+
 			if torrentPlayer.fileManager.piecesDownloaded == len(torrentPlayer.fileManager.pieces) {
 				logger.Logger.Info("Torrent Completed!!!")
 				go torrentPlayer.announceCompletedTorrent()
@@ -396,6 +411,7 @@ func (torrentPlayer *TorrentPlayer) eventLoop() {
 			}
 
 			torrentPlayer.eventChan <- &peerAvailableForDownloadEvent{peer: verifyPieceEvent.peer}
+
 			continue
 
 		case tpNewConnectionEvent:
@@ -414,7 +430,22 @@ func (torrentPlayer *TorrentPlayer) eventLoop() {
 				/* torrentPlayer.unchokePeersAsSeeder() */ // TODO: implement seeder unchoking algorithm
 				torrentPlayer.unchokePeersAsLeecher()
 			}
+			torrentPlayer.eventChan <- &updateTUIEvent{}
 			continue
+
+		case tpStopTorrentEvent:
+			// TODO: free resources by calling stopTorrent
+			err := torrentPlayer.stopTorrent()
+			if err != nil {
+				logger.Logger.Error("Failed to stop torrent player", zap.Error(err))
+			}
+			logger.Logger.Debug("Torrent player stopped")
+			return
+
+		case tpUpdateTUIEvent:
+			logger.Logger.Debug("Torrent player TUI updated")
+			torrentPlayer.modelTUI.progressChan <- torrentPlayer.calculateProgress()
+			break
 		}
 	}
 }
@@ -541,4 +572,40 @@ func (torrentPlayer *TorrentPlayer) sendPiece(rPeer *peer, index, begin, length 
 			block: block,
 		},
 	}
+}
+
+func (torrentPlayer *TorrentPlayer) runTUI() {
+	defer torrentPlayer.Wg.Done()
+
+	prog := tea.NewProgram(torrentPlayer.modelTUI)
+	if _, err := prog.Run(); err != nil {
+		logger.Logger.Error("Failed to run tea program", zap.Error(err))
+	}
+	logger.Logger.Debug("Finished running tea program")
+}
+
+func (torrentPlayer *TorrentPlayer) calculateProgress() torrentProgress {
+	return torrentProgress{
+		sizeData:      torrentPlayer.torrent.localData.sizeData,
+		peers:         uint64(len(torrentPlayer.peers)),
+		downloadSpeed: torrentPlayer.calculateDownloadSpeeds(),
+		isDownloading: torrentPlayer.torrent.localData.sizeData.Left > 0,
+		err:           nil,
+	}
+}
+
+func (torrentPlayer *TorrentPlayer) calculateDownloadSpeeds() uint64 {
+	downloadRate := uint64(0)
+	for _, peer := range torrentPlayer.peers {
+		if peer.destroyed.Load() {
+			continue
+		}
+
+		if time.Since(peer.lastBlockUploadTime) > 30*time.Second {
+			peer.uploadRate = 0
+		}
+
+		downloadRate += uint64(peer.uploadRate)
+	}
+	return downloadRate
 }

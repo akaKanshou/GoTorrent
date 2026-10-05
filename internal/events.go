@@ -11,6 +11,8 @@ const (
 	tpVerifyPieceEvent
 	tpNewConnectionEvent
 	tpUnchokeEvent
+	tpStopTorrentEvent
+	tpUpdateTUIEvent
 )
 
 type event interface {
@@ -65,3 +67,13 @@ func (e *newConnectionEvent) eventType() int { return tpNewConnectionEvent }
 type unchokeEvent struct{}
 
 func (e *unchokeEvent) eventType() int { return tpUnchokeEvent }
+
+type stopTorrentEvent struct {
+	err error
+}
+
+func (e *stopTorrentEvent) eventType() int { return tpStopTorrentEvent }
+
+type updateTUIEvent struct{}
+
+func (e *updateTUIEvent) eventType() int { return tpUpdateTUIEvent }

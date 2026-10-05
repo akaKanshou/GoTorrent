@@ -533,6 +533,7 @@ func (torrentPlayer *TorrentPlayer) sendMessage(rPeer *peer, message peerwireMes
 
 	if isPieceMessage {
 		rPeer.downloadRate.Store(int64(n) * int64(time.Second/time.Since(startTime)))
+		torrentPlayer.eventChan <- &updateTUIEvent{}
 	}
 
 	logger.Logger.Debug("Message sent", zap.String("peer", string(rPeer.peerID[:])), zap.String("bytes", fmt.Sprintf("%x", sentBytes)))
