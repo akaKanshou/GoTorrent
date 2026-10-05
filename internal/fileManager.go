@@ -53,7 +53,7 @@ func newFileManager(destination string, pieceLength int64, pieces []hashBytes, i
 }
 
 // initFiles initializes the files of fileManager, as well as allocating space for them.
-func (f *fileManager) initFiles(files infoDict) error {
+func (f *fileManager) initFiles(files infoDict, freshStart bool) error {
 	if files.multipleFiles {
 		f.destination = filepath.Join(f.destination, files.fileName)
 	}
@@ -99,10 +99,18 @@ func (f *fileManager) initFiles(files infoDict) error {
 		return err
 	}
 
-	// Load progress
-	err = f.loadProgress()
-	if err != nil {
-		return err
+	if freshStart {
+		// Clear previously stored progress file
+		err := f.clearSavedProgress()
+		if err != nil {
+			return err
+		}
+	} else {
+		// Load progress
+		err = f.loadProgress()
+		if err != nil {
+			return err
+		}
 	}
 
 	return nil
@@ -230,6 +238,20 @@ func (f *fileManager) initSavedProgress() error {
 		return err
 	}
 
+	return nil
+}
+
+func (f *fileManager) clearSavedProgress() error {
+	fd, err := os.OpenFile(f.progressFile, os.O_WRONLY, 0600)
+	if err != nil {
+		return err
+	}
+	defer fd.Close()
+
+	_, err = fd.Write(make([]byte, f.piecesDone.Size()))
+	if err != nil {
+		return err
+	}
 	return nil
 }
 

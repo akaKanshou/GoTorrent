@@ -482,7 +482,7 @@ func parseMessage(message []byte, downloadTime time.Duration) (peerwireMessage, 
 const (
 	clientID            = "GT"
 	majorVersionNumber  = "1"
-	minorVersionNumber  = "1"
+	minorVersionNumber  = "2"
 	bugfixVersionNumber = "0" //Hexadecimal
 
 	letterBytes = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ"

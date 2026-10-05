@@ -27,12 +27,14 @@ type modelTUI struct {
 
 	total         uint64
 	torrentPlayer *TorrentPlayer
+	seed          bool
 }
 
-func initialModel(sizeData torrentSizeData, total uint64, isDownloading bool, torrentPlayer *TorrentPlayer) *modelTUI {
+func initialModel(sizeData torrentSizeData, total uint64, isDownloading, seed bool, torrentPlayer *TorrentPlayer) *modelTUI {
 	return &modelTUI{
 		torrentPlayer: torrentPlayer,
 		total:         total,
+		seed:          seed,
 
 		progressChan: make(chan torrentProgress, 64),
 
@@ -87,7 +89,11 @@ func (m *modelTUI) View() string {
 	if m.progress.isDownloading {
 		s = "Downloading..."
 	} else {
-		s = "Seeding..."
+		if m.seed {
+			s = "Seeding..."
+		} else {
+			s = "Torrent Complete!"
+		}
 	}
 
 	data := [][]string{

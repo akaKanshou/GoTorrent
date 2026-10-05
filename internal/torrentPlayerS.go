@@ -57,6 +57,11 @@ type TorrentPlayer struct {
 
 	// bubble tea TUI model
 	modelTUI *modelTUI
+
+	// flags
+	verbose     bool
+	seedTorrent bool
+	freshStart  bool
 }
 
 // NewTorrentPlayer returns a new uninitialized torrent player
@@ -71,7 +76,11 @@ func NewTorrentPlayer() *TorrentPlayer {
 }
 
 // AddTorrent adds a torrent. This function initializes the torrent player.
-func (torrentPlayer *TorrentPlayer) AddTorrent(torrentSrcPath, destPath string) error {
+func (torrentPlayer *TorrentPlayer) AddTorrent(torrentSrcPath, destPath string, verbose, seedTorrent, freshStart bool) error {
+	torrentPlayer.verbose = verbose
+	torrentPlayer.seedTorrent = seedTorrent
+	torrentPlayer.freshStart = freshStart
+
 	torrent := NewTorrent()
 	err := torrent.ExtractTorrentInfo(torrentSrcPath, destPath)
 	if err != nil {
@@ -115,7 +124,7 @@ func (torrentPlayer *TorrentPlayer) addTorrent(torrent *Torrent) error {
 	torrentPlayer.fileManager = newFileManager(torrent.destPath, int64(torrent.localData.infoDict.pieceLength),
 		torrent.localData.infoDict.pieces, torrentPlayer.torrent.localData.infoHash)
 
-	err = torrentPlayer.fileManager.initFiles(torrent.localData.infoDict)
+	err = torrentPlayer.fileManager.initFiles(torrent.localData.infoDict, torrentPlayer.freshStart)
 	if err != nil {
 		return err
 	}
@@ -126,6 +135,7 @@ func (torrentPlayer *TorrentPlayer) addTorrent(torrent *Torrent) error {
 		torrentPlayer.torrent.localData.sizeData,
 		uint64(torrentPlayer.fileManager.totalLength),
 		torrentPlayer.torrent.localData.sizeData.Left > 0,
+		torrentPlayer.seedTorrent,
 		torrentPlayer,
 	)
 
@@ -414,7 +424,9 @@ func (torrentPlayer *TorrentPlayer) eventLoop() {
 			if torrentPlayer.fileManager.piecesDownloaded == len(torrentPlayer.fileManager.pieces) {
 				logger.Logger.Info("Torrent Completed!!!")
 
-				torrentPlayer.eventChan <- &stopTorrentEvent{} // TODO: only do the following depending on some configuration setting
+				if !torrentPlayer.seedTorrent {
+					torrentPlayer.eventChan <- &stopTorrentEvent{}
+				}
 
 				go torrentPlayer.announceCompletedTorrent()
 				torrentPlayer.Wg.Add(1)
