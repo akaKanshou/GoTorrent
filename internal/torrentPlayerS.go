@@ -5,6 +5,7 @@ import (
 	"math/rand/v2"
 	"net"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -27,7 +28,7 @@ import (
 // TODO: check condition of file containing piece
 
 const (
-	playerUninitialized byte = iota
+	playerUninitialized int32 = iota
 	playerPaused
 	playerStarted
 	playerStopped // The torrent player should not be used once stopped
@@ -36,7 +37,7 @@ const (
 type TorrentPlayer struct {
 	torrent *Torrent
 
-	state byte
+	state atomic.Int32
 
 	peerID        peerID
 	key           uint32 // persistent across sessions?
@@ -61,7 +62,7 @@ type TorrentPlayer struct {
 // NewTorrentPlayer returns a new uninitialized torrent player
 func NewTorrentPlayer() *TorrentPlayer {
 	return &TorrentPlayer{
-		state:                  playerUninitialized,
+		state:                  atomic.Int32{},
 		Wg:                     sync.WaitGroup{},
 		eventChan:              make(chan event, 256),
 		progressFileUpdateChan: make(chan int64, 128),
@@ -96,7 +97,7 @@ func (torrentPlayer *TorrentPlayer) PauseTorrent() error {
 // StopTorrent stops the torrent player and frees all allocated resources.
 // Any leftover progress not saved to disk is discarded.
 func (torrentPlayer *TorrentPlayer) StopTorrent() error {
-	return torrentPlayer.startTorrent()
+	return torrentPlayer.stopTorrent()
 }
 
 func (torrentPlayer *TorrentPlayer) addTorrent(torrent *Torrent) error {
@@ -133,7 +134,7 @@ func (torrentPlayer *TorrentPlayer) addTorrent(torrent *Torrent) error {
 
 func (torrentPlayer *TorrentPlayer) startTorrent() error {
 
-	torrentPlayer.state = playerStarted
+	torrentPlayer.state.Store(playerStarted)
 	go torrentPlayer.eventLoop()
 	torrentPlayer.Wg.Add(1)
 
@@ -145,7 +146,6 @@ func (torrentPlayer *TorrentPlayer) startTorrent() error {
 
 	for _, peerAddr := range peerAdds {
 		go torrentPlayer.initiateHandshake(peerAddr)
-		torrentPlayer.Wg.Add(1)
 	}
 
 	go torrentPlayer.listenForHandshakes()
@@ -166,7 +166,15 @@ func (torrentPlayer *TorrentPlayer) pauseTorrent() error {
 }
 
 func (torrentPlayer *TorrentPlayer) stopTorrent() error {
+	torrentPlayer.state.Store(playerStopped)
 	close(torrentPlayer.modelTUI.progressChan) // TODO: free peer and file manager resources
+	for _, peer := range torrentPlayer.peers {
+		peer.destroyed.Store(true)
+		torrentPlayer.eventChan <- &destroyPeerEvent{peer: peer}
+	}
+	torrentPlayer.listener.Close()
+	close(torrentPlayer.progressFileUpdateChan)
+	close(torrentPlayer.unchokePeersChan)
 	return nil
 }
 
@@ -269,8 +277,8 @@ func (torrentPlayer *TorrentPlayer) listenForHandshakes() {
 	defer torrentPlayer.Wg.Done()
 
 	// TODO: use atomic int for state
-	for torrentPlayer.state == playerStarted {
-		conn, err := torrentPlayer.listener.AcceptTCP()
+	for torrentPlayer.state.Load() == playerStarted {
+		conn, err := torrentPlayer.listener.AcceptTCP() // TODO: change to accept net.conn??? or do i just not get peers properly idk
 		if err != nil {
 			logger.Logger.Error("Failed to accept Torrent connection", zap.Error(err))
 			return
@@ -405,6 +413,9 @@ func (torrentPlayer *TorrentPlayer) eventLoop() {
 
 			if torrentPlayer.fileManager.piecesDownloaded == len(torrentPlayer.fileManager.pieces) {
 				logger.Logger.Info("Torrent Completed!!!")
+
+				torrentPlayer.eventChan <- &stopTorrentEvent{} // TODO: only do the following depending on some configuration setting
+
 				go torrentPlayer.announceCompletedTorrent()
 				torrentPlayer.Wg.Add(1)
 				continue
@@ -434,7 +445,10 @@ func (torrentPlayer *TorrentPlayer) eventLoop() {
 			continue
 
 		case tpStopTorrentEvent:
-			// TODO: free resources by calling stopTorrent
+			stopTorrentEvent := event.(*stopTorrentEvent)
+			if stopTorrentEvent.err != nil {
+				logger.Logger.Error("Fatal error", zap.Error(stopTorrentEvent.err))
+			}
 			err := torrentPlayer.stopTorrent()
 			if err != nil {
 				logger.Logger.Error("Failed to stop torrent player", zap.Error(err))
@@ -506,7 +520,7 @@ func (torrentPlayer *TorrentPlayer) saveProgress() {
 func (torrentPlayer *TorrentPlayer) unchokeEventTimer() {
 	defer torrentPlayer.Wg.Done()
 
-	for torrentPlayer.state == playerStarted /*&& torrentPlayer.torrent.localData.sizeData.Left > 0 */ {
+	for torrentPlayer.state.Load() == playerStarted /*&& torrentPlayer.torrent.localData.sizeData.Left > 0 */ {
 		select { // Block till unchoke event or 10 seconds
 		case _, ok := <-torrentPlayer.unchokePeersChan:
 			if !ok {

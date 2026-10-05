@@ -3,16 +3,19 @@ module gitlab.com/akaKanshou/gotorrent
 go 1.26.5
 
 require (
+	github.com/bcicen/go-units v1.0.5
 	github.com/charmbracelet/bubbletea v1.3.10
+	github.com/charmbracelet/lipgloss v1.1.0
 	gitlab.com/LUwUcifer/bencoder v0.0.0-20260723214943-ffbc7ed7463f
 	go.loafoe.dev/bitfield/v2 v2.0.1
 	go.uber.org/zap v1.28.0
 )
 
 require (
+	github.com/Knetic/govaluate v3.0.0+incompatible // indirect
 	github.com/aymanbagabas/go-osc52/v2 v2.0.1 // indirect
+	github.com/bcicen/bfstree v1.0.0 // indirect
 	github.com/charmbracelet/colorprofile v0.2.3-0.20250311203215-f60798e515dc // indirect
-	github.com/charmbracelet/lipgloss v1.1.0 // indirect
 	github.com/charmbracelet/x/ansi v0.10.1 // indirect
 	github.com/charmbracelet/x/cellbuf v0.0.13-0.20250311204145-2c3ea96c31dd // indirect
 	github.com/charmbracelet/x/term v0.2.1 // indirect
