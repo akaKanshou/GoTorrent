@@ -385,8 +385,8 @@ func (torrentPlayer *TorrentPlayer) eventLoop() {
 			} else {
 				logger.Logger.Debug("Peer assigned piece", zap.String("peer", string(peerAvailableForDownloadEvent.peer.peerID[:])), zap.Int64("piece", index))
 				pieceLen := torrentPlayer.fileManager.getPieceLength(index)
-				torrentPlayer.fileManager.piecesInProgress[index] = peerAvailableForDownloadEvent.peer
 				peerAvailableForDownloadEvent.peer.initBuffers(index, pieceLen)
+				torrentPlayer.fileManager.piecesInProgress[index] = peerAvailableForDownloadEvent.peer
 				torrentPlayer.eventChan <- &outgoingMessageEvent{peer: peerAvailableForDownloadEvent.peer, message: newPipedRequestsMessage(index, pieceLen)}
 			}
 			continue

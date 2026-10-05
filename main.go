@@ -9,15 +9,6 @@ import (
 	"gitlab.com/akaKanshou/gotorrent/logger"
 )
 
-const (
-	torrentMulti        = `./torrents/DepressedTrentPatterson-587c7da13d4a35db6f5ab4e3378b8a7f9c3f3f74.torrent`
-	torrentSingle       = `./torrents/IntroductiontotheSpecialIssueontheFusionofDomainKnowledgewithDataforDecisionSupport.pdf-58d212578d6b6432a113f6dd3ef0b1a3c528cf9f.torrent`
-	buckyTorrent        = `./torrents/big-buck-bunny.torrent`
-	nearOptimalTorrent  = `./torrents/Near-OptimalSensorPlacementsinGaussianProcesses_Theory,EfficientAlgorithmsandEmpiricalStudies.pdf-87f561d3d72af9b20f9d0298efddb88f948591db.torrent`
-	introductionTorrent = `./torrents/IntroductiontotheSpecialTopiconGrammarInduction,RepresentationofLanguageandLanguageLearning.pdf-71e1c9692c556e252aa7e2f4715c419ee447039b.torrent`
-	bigTorrent          = "./torrents/Knowledge-BasedKernelApproximation.pdf-501e017a78ab24b0063bd041f675af7675689b20.torrent"
-)
-
 func main() {
 	var srcPath, destPath string
 	var verbose, seedTorrent, freshStart bool

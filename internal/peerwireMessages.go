@@ -329,7 +329,8 @@ func (p *pieceMessage) marshalMessage() []byte {
 func (p *pieceMessage) unmarshalMessage(payload []byte) error {
 	p.index = int(binary.BigEndian.Uint32(payload))
 	p.begin = int(binary.BigEndian.Uint32(payload[4:]))
-	p.block = payload[8:]
+	p.block = make([]byte, len(payload[8:]))
+	copy(p.block, payload[8:])
 	return nil
 }
 
