@@ -12,6 +12,7 @@ import (
 	"github.com/charmbracelet/lipgloss/table"
 )
 
+// TODO: double units in eta, fix. artefacts also remain while rewriting console
 type torrentProgress struct {
 	sizeData      torrentSizeData
 	peers         uint64
@@ -117,7 +118,7 @@ func (m *modelTUI) View() string {
 
 	progressBar := ""
 	if m.progress.isDownloading {
-		progressPercentage := ((m.total - m.progress.sizeData.Left) * 80) / m.total
+		progressPercentage := ((m.total - m.progress.sizeData.Left) * 100) / m.total
 		downloadSpeedString := cleanTransferRate(m.progress.downloadSpeed * 8)
 		eta := "∞"
 		if m.progress.downloadSpeed > 0 {

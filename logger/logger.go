@@ -20,6 +20,7 @@ func init() {
 	config.EncoderConfig.EncodeTime = zapcore.TimeEncoderOfLayout("2006-01-02 15:04:05")
 	config.OutputPaths = []string{"./temp/logs/output"}
 	config.ErrorOutputPaths = []string{"stderr", "./temp/logs/errorOutput"}
+	config.Level = zap.NewAtomicLevelAt(zap.InfoLevel)
 
 	Logger, err = config.Build()
 	if err != nil {
